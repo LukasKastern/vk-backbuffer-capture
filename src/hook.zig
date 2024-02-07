@@ -3,7 +3,14 @@ const vulkan = @import("vk.zig");
 const pipeline = @import("pipeline.zig");
 const png = @cImport(@cInclude("png.h"));
 
-const c = @cImport(@cInclude("semaphore.h"));
+const c = @cImport({
+    @cInclude("semaphore.h");
+    @cInclude("sys/stat.h");
+    @cInclude("sys/mman.h");
+    @cInclude("unistd.h");
+    @cInclude("pthread.h");
+    @cInclude("fcntl.h");
+});
 
 var submission_count: u32 = 0;
 
@@ -13,14 +20,20 @@ var vk_create_swapchain_original: ?*const fn (device: vulkan.VkDevice, pCreateIn
 
 const HookSharedData = extern struct {
     const MaxTextures = 8;
+    const HookVersion = 10;
+
+    version: usize,
 
     num_textures: usize,
+
     texture_handles: [MaxTextures]c_int,
+
+    texture_locks: [MaxTextures]c.pthread_mutex_t,
 
     new_texture_signal: c.sem_t,
     latest_texture: c_int,
 
-    texture_locks: [MaxTextures]c.pthread_mutex_t,
+    lock: c.pthread_mutex_t,
 };
 
 fn allocateHookSharedData() void {}
@@ -378,9 +391,15 @@ const ActiveCaptureInstanceTimeoutNs = std.time.ns_per_s * 2;
 fn allocateHookImages(device_data: *VkDeviceData, swapchain_data: SwapchainData) ![]HookImageData {
     var hook_images = allocator.alloc(HookImageData, 1) catch unreachable;
     for (hook_images) |*hook_image| {
+        var image_ext_create_info = std.mem.zeroInit(vulkan.VkExternalMemoryImageCreateInfo, .{
+            .sType = vulkan.VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+            .pNext = null,
+            .handleTypes = vulkan.VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
+        });
+
         const image_info = std.mem.zeroInit(vulkan.VkImageCreateInfo, .{
             .sType = vulkan.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext = null,
+            .pNext = &image_ext_create_info,
             .imageType = vulkan.VK_IMAGE_TYPE_2D,
             .format = swapchain_data.format,
             .extent = .{
@@ -431,9 +450,15 @@ fn allocateHookImages(device_data: *VkDeviceData, swapchain_data: SwapchainData)
                 return error.MemTypeNotFound;
             };
 
+            var export_info = std.mem.zeroInit(vulkan.VkExportMemoryAllocateInfo, .{
+                .sType = vulkan.VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+                .pNext = null,
+                .handleTypes = vulkan.VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
+            });
+
             var memory_allocate_info = std.mem.zeroInit(vulkan.VkMemoryAllocateInfo, .{
                 .sType = vulkan.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                .pNext = null,
+                .pNext = &export_info,
                 .allocationSize = memory_requirements.size,
                 .memoryTypeIndex = memory_type_index,
             });
@@ -450,6 +475,14 @@ fn allocateHookImages(device_data: *VkDeviceData, swapchain_data: SwapchainData)
             });
 
             try vulkan.vkCall(device_data.api.vk_bind_image_memory, .{ device_data.vk_device, 1, &bind_info });
+
+            var get_memory_fd_info = std.mem.zeroInit(vulkan.VkMemoryGetFdInfoKHR, .{
+                .sType = vulkan.VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
+                .memory = mem,
+                .handleType = vulkan.VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
+            });
+
+            try vulkan.vkCall(device_data.api.vk_get_memory_fd, .{ device_data.vk_device, &get_memory_fd_info, &hook_image.image_handle });
         }
 
         // Allocate buffer info
@@ -597,11 +630,72 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
             active_capture_instance = null;
         }
 
+        var shm_section_name_buffer: [128]u8 = undefined;
+        var shm_section_name = try std.fmt.bufPrintZ(&shm_section_name_buffer, "vk-backbuffer-hook-{}", .{c.getpid()});
+
+        _ = c.shm_unlink(shm_section_name);
+
+        var shm_handle = c.shm_open(shm_section_name, c.O_CREAT | c.O_RDWR, 0);
+        if (shm_handle == -1) {
+            return error.FailedToOpenBackbufferHook;
+        }
+
+        if (c.ftruncate(shm_handle, @sizeOf(HookSharedData)) == 1) {
+            return error.FailedToResizeShmMem;
+        }
+
+        var shm_buf: *HookSharedData = @ptrCast(@alignCast(c.mmap(null, @sizeOf(HookSharedData), c.PROT_READ | c.PROT_WRITE, c.MAP_SHARED, shm_handle, 0)));
+        if (@intFromPtr(shm_buf) == @intFromPtr(c.MAP_FAILED)) {
+            return error.MapFailed;
+        }
+
+        @memset(@as([*c]u8, @ptrCast(shm_buf))[0..@sizeOf(HookSharedData)], 0);
+
+        var hook_images = try allocateHookImages(device_data, best_swapchain);
+        std.debug.assert(hook_images.len <= HookSharedData.MaxTextures);
+
+        for (hook_images, 0..) |image, idx| {
+            var att = std.mem.zeroes(c.pthread_mutexattr_t);
+            _ = c.pthread_mutexattr_init(&att);
+            _ = c.pthread_mutexattr_setpshared(&att, c.PTHREAD_PROCESS_SHARED);
+
+            // Ideally we would set these to be robust. So that when this app or the receiving app crashes we do not deadlock.
+            // But our current approach requires locks to be transfered inbetween threads - a robust mutex would prevent us from doing so.
+            // pthread_mutexattr_setrobust(&att, PTHREAD_MUTEX_ROBUST);
+
+            if (c.pthread_mutex_init(&shm_buf.texture_locks[idx], &att) == -1) {
+                return error.FailedToInitializeMutex;
+            }
+
+            shm_buf.texture_handles[idx] = image.image_handle;
+        }
+
+        {
+            var att = std.mem.zeroes(c.pthread_mutexattr_t);
+            _ = c.pthread_mutexattr_init(&att);
+            _ = c.pthread_mutexattr_setpshared(&att, c.PTHREAD_PROCESS_SHARED);
+
+            if (c.pthread_mutex_init(&shm_buf.lock, &att) == -1) {
+                return error.FailedToInitializeMutex;
+            }
+        }
+
+        if (c.sem_init(&shm_buf.new_texture_signal, 1, 0) == -1) {
+            return error.FailedToInitSem;
+        }
+
+        shm_buf.num_textures = hook_images.len;
+        shm_buf.latest_texture = -1;
+        shm_buf.version = HookSharedData.HookVersion;
+
+        std.log.info("ShmBuf: {}", .{shm_buf});
+
         active_capture_instance = .{
             .device = device_data,
             .swapchain = best_swapchain.vk_swapchain,
             .last_render_time = std.time.nanoTimestamp(),
-            .hook_images = try allocateHookImages(device_data, best_swapchain),
+            .hook_images = hook_images,
+            .shm_buf = shm_buf,
         };
 
         std.log.info("Set new swapchain active {}", .{@intFromPtr(best_swapchain.vk_swapchain)});
@@ -746,6 +840,7 @@ const DeviceApi = struct {
     vk_cmd_begin_rendering: *const fn (cmd_buffer: vulkan.VkCommandBuffer, rendering_info: [*c]const vulkan.VkRenderingInfo) callconv(.C) void,
     vk_cmd_end_rendering: *const fn (cmd_buffer: vulkan.VkCommandBuffer) callconv(.C) void,
     vk_cmd_push_descriptor_set: *const fn (commandBuffer: vulkan.VkCommandBuffer, pipelineBindPoint: vulkan.VkPipelineBindPoint, layout: vulkan.VkPipelineLayout, set: u32, descriptorWriteCount: u32, pDescriptorWrites: [*c]const vulkan.VkWriteDescriptorSet) callconv(.C) void,
+    vk_get_memory_fd: *const fn (device: vulkan.VkDevice, info: [*c]const vulkan.VkMemoryGetFdInfoKHR, [*c]c_int) callconv(.C) vulkan.VkResult,
 };
 
 const HookImageData = struct {
@@ -754,6 +849,7 @@ const HookImageData = struct {
     vk_fence: vulkan.VkFence,
     vk_buffer: vulkan.VkBuffer,
     memory: ?*anyopaque,
+    image_handle: c_int,
 };
 
 const QueueData = struct {
@@ -772,6 +868,8 @@ const ActiveCaptureInstance = struct {
     last_render_time: i128,
 
     hook_images: []HookImageData,
+
+    shm_buf: *HookSharedData,
 };
 
 var active_capture_instance: ?ActiveCaptureInstance = null;
@@ -872,10 +970,41 @@ pub export fn vkCreateInstance(pCreateInfo: *const vulkan.VkInstanceCreateInfo, 
     var layers = allocator.alloc(vulkan.VkLayerProperties, layer_count) catch unreachable;
     _ = vulkan.vkEnumerateInstanceLayerProperties(&layer_count, layers.ptr);
 
-    // for (pCreateInfo.ppEnabledLayerNames[0..pCreateInfo.enabledLayerCount]) |layer| {
-    //     std.log.info("Layer: {s}", .{layer});
-    // }
-    var result = getApi().vk_create_instance(pCreateInfo, pAllocator, pInstance);
+    var create_info = pCreateInfo.*;
+
+    // Inject our extensions
+    {
+        const our_extensions = [_][*:0]const u8{
+            vulkan.VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME,
+        };
+
+        var all_extensions = allocator.alloc([*:0]const u8, our_extensions.len + create_info.enabledExtensionCount) catch unreachable;
+
+        for (create_info.ppEnabledExtensionNames[0..create_info.enabledExtensionCount], 0..) |extension, idx| {
+            all_extensions[idx] = extension;
+        }
+
+        for (our_extensions) |our_extension| {
+            var has_extension = blk: {
+                for (all_extensions[0..create_info.enabledExtensionCount]) |extension| {
+                    if (std.mem.eql(u8, std.mem.span(our_extension), std.mem.span(extension))) {
+                        break :blk true;
+                    }
+                }
+
+                break :blk false;
+            };
+
+            if (!has_extension) {
+                all_extensions[create_info.enabledExtensionCount] = our_extension;
+                create_info.enabledExtensionCount += 1;
+            }
+        }
+
+        create_info.ppEnabledExtensionNames = @ptrCast(all_extensions);
+    }
+
+    var result = getApi().vk_create_instance(&create_info, pAllocator, pInstance);
     if (result == vulkan.VK_SUCCESS) {
         std.log.info("Creating instace", .{});
         vkAllocateInstanceData(pInstance.*) catch |e| {
@@ -1003,7 +1132,9 @@ fn rememberNewDevice(physical_device: vulkan.VkPhysicalDevice, device: [*c]vulka
                 .vk_cmd_begin_rendering = @ptrCast(api.vk_get_device_proc_addr(device.*, "vkCmdBeginRenderingKHR")),
                 .vk_cmd_end_rendering = @ptrCast(api.vk_get_device_proc_addr(device.*, "vkCmdEndRenderingKHR")),
                 .vk_cmd_push_descriptor_set = @ptrCast(api.vk_get_device_proc_addr(device.*, "vkCmdPushDescriptorSetKHR")),
+                .vk_get_memory_fd = @ptrCast(api.vk_get_device_proc_addr(device.*, "vkGetMemoryFdKHR")),
             },
+
             .instance_data = instance_data,
             .queues = std.ArrayList(QueueData).initCapacity(allocator, 8) catch unreachable,
             .swapchains = std.ArrayList(SwapchainData).initCapacity(allocator, 8) catch unreachable,
@@ -1039,6 +1170,8 @@ pub export fn vkCreateDevice(physicalDevice: vulkan.VkPhysicalDevice, pCreateInf
             vulkan.VK_KHR_MAINTENANCE_2_EXTENSION_NAME,
             vulkan.VK_KHR_MULTIVIEW_EXTENSION_NAME,
             vulkan.VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
+            vulkan.VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
+            vulkan.VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
         };
 
         var all_extensions = allocator.alloc([*:0]const u8, our_extensions.len + create_info.enabledExtensionCount) catch unreachable;
@@ -1100,6 +1233,7 @@ pub export fn vkCreateDevice(physicalDevice: vulkan.VkPhysicalDevice, pCreateInf
     }
 
     var result = getApi().vk_create_device(physicalDevice, &create_info, pAllocator, pDevice);
+    std.log.info("res: {}", .{result});
     if (result == vulkan.VK_SUCCESS) {
         rememberNewDevice(physicalDevice, pDevice) catch |e| {
             switch (e) {
