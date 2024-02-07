@@ -36,8 +36,6 @@ const HookSharedData = extern struct {
     lock: c.pthread_mutex_t,
 };
 
-fn allocateHookSharedData() void {}
-
 const RTLD = struct {
     pub const NEXT = @as(*anyopaque, @ptrFromInt(@as(usize, @bitCast(@as(isize, -1)))));
 };
@@ -86,6 +84,26 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
 
         return error.SwapchainNotFound;
     };
+
+    var image_and_lock = blk: {
+        for (capture_instance.hook_images, capture_instance.shm_buf.texture_locks[0..capture_instance.hook_images.len], 0..) |hook_image, *lock, idx| {
+            if (c.pthread_mutex_trylock(lock) == 0) {
+                break :blk .{
+                    .hook_image = hook_image,
+                    .lock = lock,
+                    .idx = idx,
+                };
+            }
+        }
+
+        // No image available..
+        return;
+    };
+
+    std.log.info("Capturing into tex", .{});
+
+    var hook_image = image_and_lock.hook_image;
+    var lock = image_and_lock.lock;
 
     if (queue_data.vk_command_pool == null) {
         var create_info = std.mem.zeroInit(vulkan.VkCommandPoolCreateInfo, .{
@@ -140,7 +158,7 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
 
     const attachment_info = std.mem.zeroInit(vulkan.VkRenderingAttachmentInfo, .{
         .sType = vulkan.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
-        .imageView = capture_instance.hook_images[buffer_idx].vk_view,
+        .imageView = hook_image.vk_view,
         .imageLayout = vulkan.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .loadOp = vulkan.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
         .storeOp = vulkan.VK_ATTACHMENT_STORE_OP_STORE,
@@ -278,7 +296,7 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
             .newLayout = vulkan.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             .srcQueueFamilyIndex = vulkan.VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = vulkan.VK_QUEUE_FAMILY_IGNORED,
-            .image = capture_instance.hook_images[buffer_idx].vk_image,
+            .image = hook_image.vk_image,
             .subresourceRange = .{
                 .aspectMask = vulkan.VK_IMAGE_ASPECT_COLOR_BIT,
                 .levelCount = 1,
@@ -314,9 +332,9 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
 
     try vulkan.vkCall(vulkan.vkCmdCopyImageToBuffer, .{
         cmd_buffer,
-        capture_instance.hook_images[buffer_idx].vk_image,
+        hook_image.vk_image,
         vulkan.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        capture_instance.hook_images[buffer_idx].vk_buffer,
+        hook_image.vk_buffer,
         1,
         &region,
     });
@@ -333,13 +351,13 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
         queue,
         1,
         &submit_info,
-        capture_instance.hook_images[buffer_idx].vk_fence,
+        hook_image.vk_fence,
     });
 
     try vulkan.vkCall(vulkan.vkWaitForFences, .{
         device_data.vk_device,
         1,
-        &capture_instance.hook_images[buffer_idx].vk_fence,
+        &hook_image.vk_fence,
         vulkan.VK_TRUE,
         vulkan.UINT64_MAX,
     });
@@ -347,8 +365,28 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
     try vulkan.vkCall(vulkan.vkResetFences, .{
         device_data.vk_device,
         1,
-        &capture_instance.hook_images[buffer_idx].vk_fence,
+        &hook_image.vk_fence,
     });
+
+    var post_sem = false;
+    {
+        _ = c.pthread_mutex_lock(&capture_instance.shm_buf.lock);
+        capture_instance.shm_buf.latest_texture = @intCast(image_and_lock.idx);
+
+        var prev_val: c_int = 0;
+        _ = c.sem_getvalue(&capture_instance.shm_buf.new_texture_signal, &prev_val);
+
+        if (prev_val == 0) {
+            post_sem = true;
+        }
+        _ = c.pthread_mutex_unlock(&capture_instance.shm_buf.lock);
+    }
+
+    _ = c.pthread_mutex_unlock(lock);
+
+    if (post_sem) {
+        _ = c.sem_post(&capture_instance.shm_buf.new_texture_signal);
+    }
 
     // {
     //     var buff: [128]u8 = undefined;
