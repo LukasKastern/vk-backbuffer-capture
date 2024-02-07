@@ -36,7 +36,7 @@ pub fn build(b: *std.Build) void {
         .name = "backbuffer-api",
         .target = target,
         .optimize = optimize,
-        .root_source_file = .{ .path = "src/api.zig" },
+        .root_source_file = .{ .path = "src/sdk/api.zig" },
     });
     sdk.linkLibC();
     sdk.linkSystemLibraryName("X11");
