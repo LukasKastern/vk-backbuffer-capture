@@ -15,20 +15,6 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
-    const lib = b.addStaticLibrary(.{
-        .name = "backbuffer-capture",
-        // In this case the main source file is merely a path, however, in more
-        // complicated build scripts, this could be a generated file.
-        .root_source_file = .{ .path = "src/capturing.zig" },
-        .target = target,
-        .optimize = optimize,
-    });
-
-    // This declares intent for the library to be installed into the standard
-    // location when the user invokes the "install" step (the default step when
-    // running `zig build`).
-    b.installArtifact(lib);
-
     const compile_vert = b.addSystemCommand(&.{ "glslc", "src/shaders/vs_swapchain_fullscreen.vert", "-o", "src/shaders/vs_swapchain_fullscreen.spv" });
     const compile_frag = b.addSystemCommand(&.{ "glslc", "src/shaders/fs_swapchain_fullscreen.frag", "-o", "src/shaders/fs_swapchain_fullscreen.spv" });
 
@@ -46,5 +32,29 @@ pub fn build(b: *std.Build) void {
 
     hook.linkLibC();
 
+    const sdk = b.addStaticLibrary(.{
+        .name = "backbuffer-api",
+        .target = target,
+        .optimize = optimize,
+        .root_source_file = .{ .path = "src/api.zig" },
+    });
+    sdk.linkLibC();
+    sdk.linkSystemLibraryName("X11");
+    sdk.linkSystemLibraryName("GLX");
+    sdk.linkSystemLibraryName("GL");
+
+    sdk.addIncludePath(.{ .path = "src/sdk/" });
+
+    const window = b.addExecutable(.{
+        .name = "window-example",
+        .root_source_file = .{ .path = "src/examples/window/main.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+
+    window.linkLibrary(sdk);
+
+    b.installArtifact(window);
     b.installArtifact(hook);
+    b.installArtifact(sdk);
 }
