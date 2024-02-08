@@ -66,7 +66,16 @@ pub fn capture_init(options: *const api.VKBackbufferInitializeOptions, out_state
     }
 
     defer {
-        _ = c.ptrace(c.PTRACE_DETACH, options.target_app_id, @as(c_int, 0), @as(c_int, 0));
+        var res: c_long = -1;
+        var retries: usize = 0;
+        while (res != 0 and retries < 3) {
+            retries += 1;
+            res = c.ptrace(c.PTRACE_DETACH, options.target_app_id, @as(c_int, 0), @as(c_int, 0));
+
+            if (res != 0) {
+                std.time.sleep(std.time.ns_per_ms * 15);
+            }
+        }
     }
 
     if (c.pthread_mutex_trylock(&shm_buf.remote_process_alive_lock) != 0) {

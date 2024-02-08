@@ -13,6 +13,7 @@ pub const c = @cImport({
     @cInclude("sys/syscall.h");
     @cInclude("sys/stat.h");
     @cInclude("errno.h");
+    @cInclude("sys/wait.h");
 });
 
 var shm_section_name_buffer: [128]u8 = undefined;
