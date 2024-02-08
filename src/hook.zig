@@ -39,7 +39,7 @@ pub export fn vkQueueSubmit(queue: vulkan.VkQueue, submitCount: c_uint, pSubmits
 
 var sequence: u32 = 0;
 
-fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, present_info: *const vulkan.VkPresentInfoKHR) !void {
+fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, present_info: *vulkan.VkPresentInfoKHR) !void {
     var capture_instance = active_capture_instance.?;
 
     var queue_data = blk: {
@@ -61,7 +61,6 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
 
         return error.SwapchainNotFound;
     };
-    std.log.info("Buffer idx: {}", .{buffer_idx});
 
     var image_and_lock = blk: {
         _ = c.pthread_mutex_lock(&capture_instance.shm_buf.lock);
@@ -84,8 +83,6 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
         // No image available..
         return;
     };
-
-    std.log.info("Capturing into tex {}", .{image_and_lock.idx});
 
     var hook_image = image_and_lock.hook_image;
     var lock = image_and_lock.lock;
@@ -330,7 +327,14 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
         .sType = vulkan.VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .pCommandBuffers = &cmd_buffer,
         .commandBufferCount = 1,
+        .pWaitSemaphores = present_info.pWaitSemaphores,
+        .waitSemaphoreCount = present_info.waitSemaphoreCount,
+        .pSignalSemaphores = &hook_image.vk_sem,
+        .signalSemaphoreCount = 1,
     });
+
+    present_info.waitSemaphoreCount = 1;
+    present_info.pWaitSemaphores = &hook_image.vk_sem;
 
     try vulkan.vkCall(vulkan.vkQueueSubmit, .{
         queue,
@@ -602,6 +606,11 @@ fn allocateHookImages(device_data: *VkDeviceData, swapchain_data: SwapchainData)
         try vulkan.vkCall(vulkan.vkCreateFence, .{
             device_data.vk_device, &fence_create_info, null, &hook_image.vk_fence,
         });
+
+        var sem_create_info = std.mem.zeroInit(vulkan.VkSemaphoreCreateInfo, .{
+            .sType = vulkan.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+        });
+        try vulkan.vkCall(vulkan.vkCreateSemaphore, .{ device_data.vk_device, &sem_create_info, null, &hook_image.vk_sem });
     }
 
     return hook_images;
@@ -710,6 +719,41 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
             return error.FailedToInitSem;
         }
 
+        {
+            var att = std.mem.zeroes(c.pthread_mutexattr_t);
+            _ = c.pthread_mutexattr_init(&att);
+            _ = c.pthread_mutexattr_setpshared(&att, c.PTHREAD_PROCESS_SHARED);
+
+            if (c.pthread_mutex_init(&shm_buf.lock, &att) == -1) {
+                return error.FailedToInitializeMutex;
+            }
+        }
+
+        {
+            var att = std.mem.zeroes(c.pthread_mutexattr_t);
+            _ = c.pthread_mutexattr_init(&att);
+            _ = c.pthread_mutexattr_setpshared(&att, c.PTHREAD_PROCESS_SHARED);
+            var robust = c.pthread_mutexattr_setrobust(&att, c.PTHREAD_MUTEX_ROBUST);
+
+            if (c.pthread_mutex_init(&shm_buf.hook_process_alive_lock, &att) == -1) {
+                return error.FailedToInitializeMutex;
+            }
+
+            var lck_res = c.pthread_mutex_lock(&shm_buf.hook_process_alive_lock);
+            std.log.info("Lock result {} {}", .{ lck_res, robust });
+        }
+
+        {
+            var att = std.mem.zeroes(c.pthread_mutexattr_t);
+            _ = c.pthread_mutexattr_init(&att);
+            _ = c.pthread_mutexattr_setpshared(&att, c.PTHREAD_PROCESS_SHARED);
+            _ = c.pthread_mutexattr_setrobust(&att, c.PTHREAD_MUTEX_ROBUST);
+
+            if (c.pthread_mutex_init(&shm_buf.remote_process_alive_lock, &att) == -1) {
+                return error.FailedToInitializeMutex;
+            }
+        }
+
         shm_buf.num_textures = hook_images.len;
         shm_buf.latest_texture = -1;
         shm_buf.version = HookSharedData.HookVersion;
@@ -736,6 +780,7 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
 
 pub export fn vkQueuePresentKHR(queue: vulkan.VkQueue, present_info: *const vulkan.VkPresentInfoKHR) callconv(.C) vulkan.VkResult {
     if (getVulkanDeviceDataFromVkQueue(queue)) |device_data| {
+        var present = present_info.*;
         if (!device_data.had_error) {
             var is_active = blk: {
                 break :blk isOrTrySetSwapchainActive(device_data, present_info.pSwapchains[0..present_info.swapchainCount]) catch |e| {
@@ -750,7 +795,7 @@ pub export fn vkQueuePresentKHR(queue: vulkan.VkQueue, present_info: *const vulk
             };
 
             if (is_active) {
-                copyIntoHookTexture(device_data, queue, present_info) catch |e| {
+                copyIntoHookTexture(device_data, queue, &present) catch |e| {
                     switch (e) {
                         else => {
                             std.log.err("Error occured during copyIntoHookTexture invocation. Error: {s}", .{@errorName(e)});
@@ -760,7 +805,7 @@ pub export fn vkQueuePresentKHR(queue: vulkan.VkQueue, present_info: *const vulk
                 };
             }
         }
-        return device_data.api.vk_queue_present_khr(queue, present_info);
+        return device_data.api.vk_queue_present_khr(queue, &present);
     } else {
         return getApi().vk_queue_present_khr(queue, present_info);
     }
@@ -879,6 +924,7 @@ const HookImageData = struct {
     memory: ?*anyopaque,
     image_handle: c_int,
     size: u64,
+    vk_sem: vulkan.VkSemaphore,
 };
 
 const QueueData = struct {
@@ -1262,7 +1308,7 @@ pub export fn vkCreateDevice(physicalDevice: vulkan.VkPhysicalDevice, pCreateInf
     }
 
     var result = getApi().vk_create_device(physicalDevice, &create_info, pAllocator, pDevice);
-    std.log.info("res: {}", .{result});
+
     if (result == vulkan.VK_SUCCESS) {
         rememberNewDevice(physicalDevice, pDevice) catch |e| {
             switch (e) {

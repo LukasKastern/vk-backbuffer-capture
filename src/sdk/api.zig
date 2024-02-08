@@ -65,6 +65,31 @@ pub fn capture_init(options: *const api.VKBackbufferInitializeOptions, out_state
         return VkBackbufferErrors.RemoteNotFound;
     }
 
+    defer {
+        _ = c.ptrace(c.PTRACE_DETACH, options.target_app_id, @as(c_int, 0), @as(c_int, 0));
+    }
+
+    if (c.pthread_mutex_trylock(&shm_buf.remote_process_alive_lock) == -1) {
+        // Somebody is already hooked into the process..
+        return VkBackbufferErrors.RemoteNotFound;
+    }
+
+    errdefer _ = c.pthread_mutex_unlock(&shm_buf.remote_process_alive_lock);
+
+    {
+        var res = c.pthread_mutex_trylock(&shm_buf.hook_process_alive_lock);
+        if (res == 0 or res == @intFromEnum(std.os.linux.E.OWNERDEAD)) {
+            // Process is not alive anymore..
+
+            if (res == @intFromEnum(std.os.linux.E.OWNERDEAD)) {
+                _ = c.pthread_mutex_consistent(&shm_buf.hook_process_alive_lock);
+            }
+
+            _ = c.pthread_mutex_unlock(&shm_buf.hook_process_alive_lock);
+            return VkBackbufferErrors.RemoteNotFound;
+        }
+    }
+
     var pid = c.syscall(c.SYS_pidfd_open, options.target_app_id, @as(c_int, 0));
 
     var handles = try allocator.alloc(c_int, shm_buf.num_textures);
@@ -73,10 +98,6 @@ pub fn capture_init(options: *const api.VKBackbufferInitializeOptions, out_state
     for (shm_buf.texture_handles[0..shm_buf.num_textures], handles) |texture_handle, *handle| {
         var out_handle = c.syscall(c.SYS_pidfd_getfd, pid, texture_handle, @as(c_int, 0));
         handle.* = @intCast(out_handle);
-    }
-
-    if (c.ptrace(c.PTRACE_DETACH, options.target_app_id, @as(c_int, 0), @as(c_int, 0)) == -1) {
-        return VkBackbufferErrors.RemoteNotFound;
     }
 
     var backbuffer_capture_state = try allocator.create(BackbufferCaptureState);
@@ -93,6 +114,18 @@ pub fn capture_deinit(state: api.VKBackbufferCaptureState) void {
 
 pub fn capture_try_get_next_frame(state: api.VKBackbufferCaptureState, wait_time_ns: u32, out_frame: *api.VKBackbufferFrame) VkBackbufferErrors!void {
     var backbuffer_capture_state = @as(*BackbufferCaptureState, @ptrCast(@alignCast(state)));
+
+    var lck_res = c.pthread_mutex_trylock(&backbuffer_capture_state.shared_data.hook_process_alive_lock);
+
+    if (lck_res == 0 or lck_res == @intFromEnum(std.os.linux.E.OWNERDEAD)) {
+        if (lck_res == @intFromEnum(std.os.linux.E.OWNERDEAD)) {
+            _ = c.pthread_mutex_consistent(&backbuffer_capture_state.shared_data.hook_process_alive_lock);
+        }
+
+        // Process is not alive anymore..
+        _ = c.pthread_mutex_unlock(&backbuffer_capture_state.shared_data.hook_process_alive_lock);
+        return VkBackbufferErrors.RemoteNotFound;
+    }
 
     var time: c.timespec = undefined;
     _ = c.clock_gettime(c.CLOCK_REALTIME, &time);

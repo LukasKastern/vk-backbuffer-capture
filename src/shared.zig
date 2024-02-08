@@ -11,13 +11,15 @@ pub const c = @cImport({
     @cInclude("dlfcn.h");
     @cInclude("sys/ptrace.h");
     @cInclude("sys/syscall.h");
+    @cInclude("sys/stat.h");
+    @cInclude("errno.h");
 });
 
 var shm_section_name_buffer: [128]u8 = undefined;
 
 pub const HookSharedData = extern struct {
     pub const MaxTextures = 8;
-    pub const HookVersion = 12;
+    pub const HookVersion = 13;
 
     version: usize,
 
@@ -39,6 +41,10 @@ pub const HookSharedData = extern struct {
     latest_texture: c_int,
 
     lock: c.pthread_mutex_t,
+
+    hook_process_alive_lock: c.pthread_mutex_t,
+
+    remote_process_alive_lock: c.pthread_mutex_t,
 };
 
 pub fn formatSectionName(process_id: c_int) ![:0]const u8 {
