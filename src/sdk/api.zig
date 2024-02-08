@@ -52,29 +52,32 @@ pub fn capture_init(options: *const api.VKBackbufferInitializeOptions, out_state
     );
 
     if (@intFromPtr(shm_buf) == @intFromPtr(c.MAP_FAILED)) {
-        return VkBackbufferErrors.RemoteNotFound;
+        return error.RemoteNotFound;
     }
 
     errdefer _ = c.munmap(shm_buf, @sizeOf(shared.HookSharedData));
 
     if (shm_buf.version != shared.HookSharedData.HookVersion) {
-        return VkBackbufferErrors.VersionMismatch;
+        return error.VersionMismatch;
     }
 
     if (c.ptrace(c.PTRACE_ATTACH, options.target_app_id, @as(c_int, 0), @as(c_int, 0)) == -1) {
-        return VkBackbufferErrors.RemoteNotFound;
+        return error.RemoteNotFound;
     }
 
     defer {
         _ = c.ptrace(c.PTRACE_DETACH, options.target_app_id, @as(c_int, 0), @as(c_int, 0));
     }
 
-    if (c.pthread_mutex_trylock(&shm_buf.remote_process_alive_lock) == -1) {
+    if (c.pthread_mutex_trylock(&shm_buf.remote_process_alive_lock) != 0) {
         // Somebody is already hooked into the process..
-        return VkBackbufferErrors.RemoteNotFound;
+        return error.RemoteNotFound;
     }
 
     errdefer _ = c.pthread_mutex_unlock(&shm_buf.remote_process_alive_lock);
+
+    _ = c.pthread_mutex_lock(&shm_buf.lock);
+    defer _ = c.pthread_mutex_unlock(&shm_buf.lock);
 
     {
         var res = c.pthread_mutex_trylock(&shm_buf.hook_process_alive_lock);
@@ -86,7 +89,7 @@ pub fn capture_init(options: *const api.VKBackbufferInitializeOptions, out_state
             }
 
             _ = c.pthread_mutex_unlock(&shm_buf.hook_process_alive_lock);
-            return VkBackbufferErrors.RemoteNotFound;
+            return error.RemoteNotFound;
         }
     }
 
@@ -104,6 +107,8 @@ pub fn capture_init(options: *const api.VKBackbufferInitializeOptions, out_state
     backbuffer_capture_state.shared_data = shm_buf;
     backbuffer_capture_state.opengl_import_api = null;
     backbuffer_capture_state.texture_handles = handles;
+
+    std.log.info("Hooked to {s} ({})", .{ shm_section_name, shm_buf.sequence });
 
     out_state.* = @ptrCast(backbuffer_capture_state);
 }
@@ -247,6 +252,7 @@ pub fn capture_import_opengl_texture(state: api.VKBackbufferCaptureState, frame:
 
     defer gl_api.gl_bind_texture(GL_TEXTURE_2D, 0);
 
+    // Ehhh. We shouldn't do this here lol.
     const GL_RGBA8 = @import("std").zig.c_translation.promoteIntLiteral(c_int, 0x8058, .hexadecimal);
     const GL_TEXTURE_TILING_EXT = @import("std").zig.c_translation.promoteIntLiteral(c_int, 0x9580, .hexadecimal);
     // const GL_TILING_TYPES_EXT = @import("std").zig.c_translation.promoteIntLiteral(c_int, 0x9583, .hexadecimal);

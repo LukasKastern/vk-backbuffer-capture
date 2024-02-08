@@ -620,7 +620,27 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
     active_capture_instance_lck.lock();
     defer active_capture_instance_lck.unlock();
 
-    if (active_capture_instance) |capture_instance| {
+    if (active_capture_instance) |*capture_instance| {
+        var lock_result = c.pthread_mutex_trylock(&capture_instance.shm_buf.remote_process_alive_lock);
+        var is_remote_process_alive = lock_result ==
+            @intFromEnum(std.os.linux.E.BUSY);
+
+        if (lock_result == 0) {
+            _ = c.pthread_mutex_unlock(&capture_instance.shm_buf.remote_process_alive_lock);
+        }
+
+        if (capture_instance.was_remote_process_alive and !is_remote_process_alive) {
+            // Remote process died, reallocate the swapchain data.
+            // TODO: queue deallocation when it's safe to do
+            std.log.info("Remote process died", .{});
+
+            _ = c.pthread_mutex_unlock(&capture_instance.shm_buf.hook_process_alive_lock);
+            active_capture_instance = null;
+            return false;
+        } else {
+            capture_instance.was_remote_process_alive = is_remote_process_alive;
+        }
+
         if (capture_instance.device == device_data) {
             for (swapchains) |in_swapchain| {
                 if (capture_instance.swapchain == in_swapchain) {
@@ -659,9 +679,9 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
 
     if (best_swapchain_data) |best_swapchain| {
         if (active_capture_instance) |active_capture| {
-            _ = active_capture; // autofix
 
             // TODO: queue deallocation when it's safe to do
+            _ = c.pthread_mutex_unlock(&active_capture.shm_buf.hook_process_alive_lock);
             active_capture_instance = null;
         }
 
@@ -684,6 +704,16 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
             return error.MapFailed;
         }
 
+        {
+            var att = std.mem.zeroes(c.pthread_mutexattr_t);
+            _ = c.pthread_mutexattr_init(&att);
+            _ = c.pthread_mutexattr_setpshared(&att, c.PTHREAD_PROCESS_SHARED);
+
+            if (c.pthread_mutex_init(&shm_buf.lock, &att) == -1) {
+                return error.FailedToInitializeMutex;
+            }
+        }
+
         @memset(@as([*c]u8, @ptrCast(shm_buf))[0..@sizeOf(HookSharedData)], 0);
 
         var hook_images = try allocateHookImages(device_data, best_swapchain);
@@ -694,25 +724,11 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
             _ = c.pthread_mutexattr_init(&att);
             _ = c.pthread_mutexattr_setpshared(&att, c.PTHREAD_PROCESS_SHARED);
 
-            // Ideally we would set these to be robust. So that when this app or the receiving app crashes we do not deadlock.
-            // But our current approach requires locks to be transfered inbetween threads - a robust mutex would prevent us from doing so.
-            // pthread_mutexattr_setrobust(&att, PTHREAD_MUTEX_ROBUST);
-
             if (c.pthread_mutex_init(&shm_buf.texture_locks[idx], &att) == -1) {
                 return error.FailedToInitializeMutex;
             }
 
             shm_buf.texture_handles[idx] = image.image_handle;
-        }
-
-        {
-            var att = std.mem.zeroes(c.pthread_mutexattr_t);
-            _ = c.pthread_mutexattr_init(&att);
-            _ = c.pthread_mutexattr_setpshared(&att, c.PTHREAD_PROCESS_SHARED);
-
-            if (c.pthread_mutex_init(&shm_buf.lock, &att) == -1) {
-                return error.FailedToInitializeMutex;
-            }
         }
 
         if (c.sem_init(&shm_buf.new_texture_signal, 1, 0) == -1) {
@@ -733,14 +749,11 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
             var att = std.mem.zeroes(c.pthread_mutexattr_t);
             _ = c.pthread_mutexattr_init(&att);
             _ = c.pthread_mutexattr_setpshared(&att, c.PTHREAD_PROCESS_SHARED);
-            var robust = c.pthread_mutexattr_setrobust(&att, c.PTHREAD_MUTEX_ROBUST);
+            _ = c.pthread_mutexattr_setrobust(&att, c.PTHREAD_MUTEX_ROBUST);
 
             if (c.pthread_mutex_init(&shm_buf.hook_process_alive_lock, &att) == -1) {
                 return error.FailedToInitializeMutex;
             }
-
-            var lck_res = c.pthread_mutex_lock(&shm_buf.hook_process_alive_lock);
-            std.log.info("Lock result {} {}", .{ lck_res, robust });
         }
 
         {
@@ -761,6 +774,7 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
         shm_buf.width = @intCast(best_swapchain.width);
         shm_buf.height = @intCast(best_swapchain.height);
         shm_buf.size = @intCast(hook_images[0].size);
+        shm_buf.sequence = next_active_capture_instance_seq;
 
         active_capture_instance = .{
             .device = device_data,
@@ -768,9 +782,14 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
             .last_render_time = std.time.nanoTimestamp(),
             .hook_images = hook_images,
             .shm_buf = shm_buf,
+            .was_remote_process_alive = false,
         };
 
-        std.log.info("Set new swapchain active {}", .{@intFromPtr(best_swapchain.vk_swapchain)});
+        next_active_capture_instance_seq += 1;
+
+        _ = c.pthread_mutex_lock(&shm_buf.hook_process_alive_lock);
+
+        std.log.info("Set new swapchain active {} ({})", .{ @intFromPtr(best_swapchain.vk_swapchain), shm_buf.sequence });
 
         return true;
     }
@@ -945,9 +964,12 @@ const ActiveCaptureInstance = struct {
     hook_images: []HookImageData,
 
     shm_buf: *HookSharedData,
+
+    was_remote_process_alive: bool,
 };
 
 var active_capture_instance: ?ActiveCaptureInstance = null;
+var next_active_capture_instance_seq: usize = 1;
 var active_capture_instance_lck: std.Thread.Mutex = .{};
 
 const SwapchainData = struct {

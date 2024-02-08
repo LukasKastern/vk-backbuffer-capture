@@ -23,6 +23,8 @@ pub const HookSharedData = extern struct {
 
     version: usize,
 
+    sequence: usize,
+
     num_textures: usize,
 
     texture_handles: [MaxTextures]c_int,

@@ -70,12 +70,16 @@ pub fn main() !void {
     var visual_info = c.glXGetVisualFromFBConfig(display, fb_configs[0]);
     var window_attributes = std.mem.zeroInit(c.XSetWindowAttributes, .{
         .border_pixel = 0,
-        .event_mask = 0,
+        .event_mask = c.StructureNotifyMask,
         .colormap = c.XCreateColormap(display, c.RootWindow(display, visual_info.*.screen), visual_info.*.visual, c.AllocNone),
     });
 
+    var ratio = @as(f32, @floatFromInt(init_backbuffer_frame.width)) / @as(f32, @floatFromInt(init_backbuffer_frame.height));
+
     var swa_mask: c_ulong = @intCast(c.CWBorderPixel | c.CWColormap | c.CWEventMask | c.CWOverrideRedirect);
-    var win = c.XCreateWindow(display, c.RootWindow(display, visual_info.*.screen), 0, 0, init_backbuffer_frame.width, init_backbuffer_frame.height, 0, visual_info.*.depth, c.InputOutput, visual_info.*.visual, swa_mask, &window_attributes);
+    var win = c.XCreateWindow(display, c.RootWindow(display, visual_info.*.screen), 0, 0, @intFromFloat(500 * ratio), 500, 0, visual_info.*.depth, c.InputOutput, visual_info.*.visual, swa_mask, &window_attributes);
+
+    std.log.info("{}x{}", .{ init_backbuffer_frame.width, init_backbuffer_frame.height });
 
     _ = c.XStoreName(display, win, "Example Window");
 
@@ -97,14 +101,23 @@ pub fn main() !void {
     var handle_to_gl_tex = std.AutoArrayHashMap(c_int, u32).init(allocator);
 
     c.glMatrixMode(c.GL_PROJECTION);
-    c.glOrtho(0, @floatFromInt(init_backbuffer_frame.width), @floatFromInt(init_backbuffer_frame.height), 0, -1, 1);
+    c.glLoadIdentity();
+
     c.glMatrixMode(c.GL_MODELVIEW);
     c.glLoadIdentity();
 
+    c.glTranslatef(0, 0, 0);
+    c.glScalef(1.0, -1.0, 1.0);
+
     while (true) {
+        var atts: c.XWindowAttributes = undefined;
+        _ = c.XGetWindowAttributes(display, win, &atts);
+
         while (c.XPending(display) != 0) {
             var event: c.XEvent = undefined;
             _ = c.XNextEvent(display, &event);
+
+            c.glViewport(0, 0, event.xconfigure.width, event.xconfigure.height);
         }
 
         var backbuffer_frame: backbuffer_capture.VKBackbufferFrame = undefined;
@@ -136,14 +149,14 @@ pub fn main() !void {
         c.glBindTexture(c.GL_TEXTURE_2D, gl_handle);
         c.glEnable(c.GL_TEXTURE_2D);
         c.glBegin(c.GL_QUADS);
-        c.glTexCoord2i(0, 0);
-        c.glVertex2i(0, 0);
-        c.glTexCoord2i(0, 1);
-        c.glVertex2i(0, @intCast(init_backbuffer_frame.width));
-        c.glTexCoord2i(1, 1);
-        c.glVertex2i(@intCast(init_backbuffer_frame.width), @intCast(init_backbuffer_frame.height));
-        c.glTexCoord2i(1, 0);
-        c.glVertex2i(@intCast(init_backbuffer_frame.width), 0);
+        c.glTexCoord2f(0, 0);
+        c.glVertex2i(-1, -1);
+        c.glTexCoord2f(0, 1);
+        c.glVertex2i(-1, 1);
+        c.glTexCoord2f(1, 1);
+        c.glVertex2i(1, 1);
+        c.glTexCoord2f(1, 0);
+        c.glVertex2i(1, -1);
         c.glEnd();
         c.glDisable(c.GL_TEXTURE_2D);
         c.glBindTexture(c.GL_TEXTURE_2D, 0);
