@@ -19,4 +19,10 @@ Start the target application with the capture shared object as preloaded.
 
 ```LD_PRELOAD=vk-backbuffer-capture/zig-out/libbackbuffer-capture.so vkcube```
 
+The current way of transfering the textures requires ptrace permission.
+E.g:
+ 
+```
+sudo setcap 'cap_sys_ptrace=ep' /home/yourname/Projects/backbuffer-capture/zig-out/bin/window-example
+```
 

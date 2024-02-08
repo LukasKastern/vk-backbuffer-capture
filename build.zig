@@ -39,9 +39,6 @@ pub fn build(b: *std.Build) void {
         .root_source_file = .{ .path = "src/sdk/api.zig" },
     });
     sdk.linkLibC();
-    sdk.linkSystemLibraryName("X11");
-    sdk.linkSystemLibraryName("GLX");
-    sdk.linkSystemLibraryName("GL");
 
     sdk.addIncludePath(.{ .path = "src/sdk/" });
 
@@ -52,7 +49,28 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    window.linkSystemLibraryName("X11");
+    window.linkSystemLibraryName("GLX");
+    window.linkSystemLibraryName("GL");
+
     window.linkLibrary(sdk);
+
+    var shared_module = b.addModule("shared", .{
+        .source_file = .{ .path = "src/shared.zig" },
+    });
+
+    var sdk_module = b.addModule(
+        "backbuffer-capture",
+        .{
+            .source_file = .{ .path = "src/sdk/api.zig" },
+            .dependencies = &.{
+                .{ .name = "shared", .module = shared_module },
+            },
+        },
+    );
+    window.addModule("backbuffer-capture", sdk_module);
+
+    window.addIncludePath(.{ .path = "src/sdk" });
 
     b.installArtifact(window);
     b.installArtifact(hook);

@@ -3,38 +3,15 @@ const vulkan = @import("vk.zig");
 const pipeline = @import("pipeline.zig");
 const png = @cImport(@cInclude("png.h"));
 
-const c = @cImport({
-    @cInclude("semaphore.h");
-    @cInclude("sys/stat.h");
-    @cInclude("sys/mman.h");
-    @cInclude("unistd.h");
-    @cInclude("pthread.h");
-    @cInclude("fcntl.h");
-});
+const c = @import("shared.zig").c;
+const HookSharedData = @import("shared.zig").HookSharedData;
+const formatSectionName = @import("shared.zig").formatSectionName;
 
 var submission_count: u32 = 0;
 
 var vk_queue_submit_original: ?*const fn (queue: vulkan.VkQueue, submitCount: c_uint, pSubmits: *const vulkan.VkSubmitInfo, fence: vulkan.VkFence) callconv(.C) vulkan.VkResult = null;
 var vk_queue_submit_2_original: ?*const fn (queue: vulkan.VkQueue, submitCount: c_uint, pSubmits: *const vulkan.VkSubmitInfo2, fence: vulkan.VkFence) callconv(.C) vulkan.VkResult = null;
 var vk_create_swapchain_original: ?*const fn (device: vulkan.VkDevice, pCreateInfo: *const vulkan.VkSwapchainCreateInfoKHR, pAllocator: *const vulkan.VkAllocationCallbacks, pSwapchain: *vulkan.VkSwapchainKHR) callconv(.C) vulkan.VkResult = null;
-
-const HookSharedData = extern struct {
-    const MaxTextures = 8;
-    const HookVersion = 10;
-
-    version: usize,
-
-    num_textures: usize,
-
-    texture_handles: [MaxTextures]c_int,
-
-    texture_locks: [MaxTextures]c.pthread_mutex_t,
-
-    new_texture_signal: c.sem_t,
-    latest_texture: c_int,
-
-    lock: c.pthread_mutex_t,
-};
 
 const RTLD = struct {
     pub const NEXT = @as(*anyopaque, @ptrFromInt(@as(usize, @bitCast(@as(isize, -1)))));
@@ -86,7 +63,14 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
     };
 
     var image_and_lock = blk: {
+        _ = c.pthread_mutex_lock(&capture_instance.shm_buf.lock);
+        defer _ = c.pthread_mutex_unlock(&capture_instance.shm_buf.lock);
+
         for (capture_instance.hook_images, capture_instance.shm_buf.texture_locks[0..capture_instance.hook_images.len], 0..) |hook_image, *lock, idx| {
+            if (idx == capture_instance.shm_buf.latest_texture) {
+                continue;
+            }
+
             if (c.pthread_mutex_trylock(lock) == 0) {
                 break :blk .{
                     .hook_image = hook_image,
@@ -100,7 +84,7 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
         return;
     };
 
-    std.log.info("Capturing into tex", .{});
+    std.log.info("Capturing into tex {}", .{image_and_lock.idx});
 
     var hook_image = image_and_lock.hook_image;
     var lock = image_and_lock.lock;
@@ -379,6 +363,7 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
         if (prev_val == 0) {
             post_sem = true;
         }
+
         _ = c.pthread_mutex_unlock(&capture_instance.shm_buf.lock);
     }
 
@@ -427,7 +412,7 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
 const ActiveCaptureInstanceTimeoutNs = std.time.ns_per_s * 2;
 
 fn allocateHookImages(device_data: *VkDeviceData, swapchain_data: SwapchainData) ![]HookImageData {
-    var hook_images = allocator.alloc(HookImageData, 1) catch unreachable;
+    var hook_images = allocator.alloc(HookImageData, 3) catch unreachable;
     for (hook_images) |*hook_image| {
         var image_ext_create_info = std.mem.zeroInit(vulkan.VkExternalMemoryImageCreateInfo, .{
             .sType = vulkan.VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
@@ -466,6 +451,8 @@ fn allocateHookImages(device_data: *VkDeviceData, swapchain_data: SwapchainData)
 
         var memory_requirements: vulkan.VkMemoryRequirements = undefined;
         try vulkan.vkCall(vulkan.vkGetImageMemoryRequirements, .{ device_data.vk_device, hook_image.vk_image, &memory_requirements });
+
+        hook_image.size = memory_requirements.size;
 
         // Allocate texture memory
         {
@@ -668,12 +655,12 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
             active_capture_instance = null;
         }
 
-        var shm_section_name_buffer: [128]u8 = undefined;
-        var shm_section_name = try std.fmt.bufPrintZ(&shm_section_name_buffer, "vk-backbuffer-hook-{}", .{c.getpid()});
+        var shm_section_name = try formatSectionName(c.getpid());
+        std.log.info("Open shm section: {s}", .{shm_section_name});
 
         _ = c.shm_unlink(shm_section_name);
 
-        var shm_handle = c.shm_open(shm_section_name, c.O_CREAT | c.O_RDWR, 0);
+        var shm_handle = c.shm_open(shm_section_name, c.O_CREAT | c.O_RDWR, c.S_IRUSR | c.S_IWUSR | c.S_IXUSR);
         if (shm_handle == -1) {
             return error.FailedToOpenBackbufferHook;
         }
@@ -725,8 +712,10 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
         shm_buf.num_textures = hook_images.len;
         shm_buf.latest_texture = -1;
         shm_buf.version = HookSharedData.HookVersion;
-
-        std.log.info("ShmBuf: {}", .{shm_buf});
+        shm_buf.format = best_swapchain.format;
+        shm_buf.width = @intCast(best_swapchain.width);
+        shm_buf.height = @intCast(best_swapchain.height);
+        shm_buf.size = @intCast(hook_images[0].size);
 
         active_capture_instance = .{
             .device = device_data,
@@ -888,6 +877,7 @@ const HookImageData = struct {
     vk_buffer: vulkan.VkBuffer,
     memory: ?*anyopaque,
     image_handle: c_int,
+    size: u64,
 };
 
 const QueueData = struct {
