@@ -55,12 +55,13 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
     var buffer_idx = blk: {
         for (present_info.pSwapchains[0..present_info.swapchainCount], 0..) |swapchain, idx| {
             if (swapchain == capture_instance.swapchain) {
-                break :blk idx;
+                break :blk present_info.pImageIndices[idx];
             }
         }
 
         return error.SwapchainNotFound;
     };
+    std.log.info("Buffer idx: {}", .{buffer_idx});
 
     var image_and_lock = blk: {
         _ = c.pthread_mutex_lock(&capture_instance.shm_buf.lock);
