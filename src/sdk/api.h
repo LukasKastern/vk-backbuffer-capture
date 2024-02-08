@@ -1,3 +1,8 @@
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 #include <stdint.h>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
@@ -36,3 +41,7 @@ vk_backbuffer_capture_result vk_backbuffer_capture_return_frame(VKBackbufferCapt
 
 /** Utility method to acquire an opengl texture from an opaque file handle. */
 vk_backbuffer_capture_result vk_backbuffer_capture_import_opengl_texture(VKBackbufferCaptureState out_state, const struct VkBackbufferFrame *frame, uint32_t gl_texture);
+
+#ifdef __cplusplus
+}
+#endif
