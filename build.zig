@@ -25,8 +25,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    hook.linkSystemLibraryName("png");
-
     hook.step.dependOn(&compile_frag.step);
     hook.step.dependOn(&compile_vert.step);
 

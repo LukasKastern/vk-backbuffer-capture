@@ -1,7 +1,6 @@
 const std = @import("std");
 const vulkan = @import("vk.zig");
 const pipeline = @import("pipeline.zig");
-const png = @cImport(@cInclude("png.h"));
 
 const c = @import("shared.zig").c;
 const HookSharedData = @import("shared.zig").HookSharedData;
@@ -269,32 +268,6 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
         try vulkan.vkCall(device_data.api.vk_cmd_pipeline_barrier, .{ cmd_buffer, &dep_info });
     }
 
-    var region = std.mem.zeroInit(vulkan.VkBufferImageCopy, .{
-        .bufferOffset = 0,
-        .bufferRowLength = @as(u32, @intCast(swapchain_data.width)),
-        .bufferImageHeight = @as(u32, @intCast(swapchain_data.height)),
-        .imageSubresource = .{
-            .aspectMask = vulkan.VK_IMAGE_ASPECT_COLOR_BIT,
-            .mipLevel = 0,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-        },
-        .imageExtent = .{
-            .width = @as(u32, @intCast(swapchain_data.width)),
-            .height = @as(u32, @intCast(swapchain_data.height)),
-            .depth = 1,
-        },
-    });
-
-    try vulkan.vkCall(vulkan.vkCmdCopyImageToBuffer, .{
-        cmd_buffer,
-        hook_image.vk_image,
-        vulkan.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        hook_image.vk_buffer,
-        1,
-        &region,
-    });
-
     try vulkan.vkCall(vulkan.vkEndCommandBuffer, .{cmd_buffer});
 
     const submit_info = std.mem.zeroInit(vulkan.VkSubmitInfo, .{
@@ -351,41 +324,6 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
     if (post_sem) {
         _ = c.sem_post(&capture_instance.shm_buf.new_texture_signal);
     }
-
-    // {
-    //     var buff: [128]u8 = undefined;
-    //     var name = try std.fmt.bufPrintZ(&buff, "Somepng_{}.png", .{sequence});
-    //     sequence += 1;
-    //     var file = png.fopen(name, "wb");
-
-    //     var write_struct = png.png_create_write_struct(png.PNG_LIBPNG_VER_STRING, null, null, null);
-    //     png.png_init_io(write_struct, file);
-
-    //     var info = png.png_create_info_struct(write_struct);
-    //     png.png_set_IHDR(
-    //         write_struct,
-    //         info,
-    //         @intCast(swapchain_data.width),
-    //         @intCast(swapchain_data.height),
-    //         8,
-    //         png.PNG_COLOR_TYPE_RGB_ALPHA,
-    //         png.PNG_INTERLACE_NONE,
-    //         png.PNG_COMPRESSION_TYPE_DEFAULT,
-    //         png.PNG_FILTER_TYPE_DEFAULT,
-    //     );
-
-    //     var rows = allocator.alloc([*c]u8, swapchain_data.height) catch unreachable;
-    //     defer allocator.free(rows);
-    //     for (rows, 0..) |*row, idx| {
-    //         row.* = &@as([*c]u8, @ptrCast(capture_instance.hook_images[buffer_idx].memory))[idx * swapchain_data.width * 4];
-    //     }
-
-    //     png.png_set_rows(write_struct, info, @ptrCast(rows));
-
-    //     png.png_write_png(write_struct, info, png.PNG_TRANSFORM_BGR, null);
-
-    //     _ = png.fclose(file);
-    // }
 }
 
 const ActiveCaptureInstanceTimeoutNs = std.time.ns_per_s * 2;
@@ -487,74 +425,6 @@ fn allocateHookImages(device_data: *VkDeviceData, swapchain_data: SwapchainData)
             });
 
             try vulkan.vkCall(device_data.api.vk_get_memory_fd, .{ device_data.vk_device, &get_memory_fd_info, &hook_image.image_handle });
-        }
-
-        // Allocate buffer info
-        {
-            var buffer_create_info = std.mem.zeroInit(vulkan.VkBufferCreateInfo, .{
-                .sType = vulkan.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                .size = memory_requirements.size,
-                .queueFamilyIndexCount = 0,
-                .pQueueFamilyIndices = null,
-                .usage = vulkan.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            });
-
-            var buffer: vulkan.VkBuffer = undefined;
-            try vulkan.vkCall(vulkan.vkCreateBuffer, .{
-                device_data.vk_device,
-                &buffer_create_info,
-                null,
-                &buffer,
-            });
-
-            hook_image.vk_buffer = buffer;
-
-            var requirements: vulkan.VkMemoryRequirements = undefined;
-            try vulkan.vkCall(vulkan.vkGetBufferMemoryRequirements, .{
-                device_data.vk_device,
-                buffer,
-                &requirements,
-            });
-
-            const memory_type_index = mem_type: {
-                var mem_props: vulkan.VkPhysicalDeviceMemoryProperties = undefined;
-                try vulkan.vkCall(vulkan.vkGetPhysicalDeviceMemoryProperties, .{ device_data.vk_phy_device, &mem_props });
-
-                for (mem_props.memoryTypes[0..mem_props.memoryTypeCount], 0..) |prop, idx| {
-                    if (requirements.memoryTypeBits & (@as(u32, 1) << @intCast(idx)) == 0) {
-                        continue;
-                    }
-
-                    var flags = vulkan.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | vulkan.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-
-                    if ((@as(c_int, @intCast(prop.propertyFlags)) & (flags)) == flags) {
-                        break :mem_type @as(u32, @intCast(idx));
-                    }
-                }
-
-                return error.MemTypeNotFound;
-            };
-
-            var memory_allocate_info = std.mem.zeroInit(vulkan.VkMemoryAllocateInfo, .{
-                .sType = vulkan.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                .pNext = null,
-                .allocationSize = memory_requirements.size,
-                .memoryTypeIndex = memory_type_index,
-            });
-
-            var mem: vulkan.VkDeviceMemory = undefined;
-            try vulkan.vkCall(vulkan.vkAllocateMemory, .{ device_data.vk_device, &memory_allocate_info, null, &mem });
-
-            try vulkan.vkCall(vulkan.vkBindBufferMemory, .{ device_data.vk_device, buffer, mem, 0 });
-
-            try vulkan.vkCall(vulkan.vkMapMemory, .{
-                device_data.vk_device,
-                mem,
-                0,
-                memory_requirements.size,
-                0,
-                &hook_image.memory,
-            });
         }
 
         var info = std.mem.zeroInit(vulkan.VkImageViewCreateInfo, .{
@@ -921,8 +791,6 @@ const HookImageData = struct {
     vk_image: vulkan.VkImage,
     vk_view: vulkan.VkImageView,
     vk_fence: vulkan.VkFence,
-    vk_buffer: vulkan.VkBuffer,
-    memory: ?*anyopaque,
     image_handle: c_int,
     size: u64,
     vk_sem: vulkan.VkSemaphore,
