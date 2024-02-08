@@ -280,7 +280,6 @@ pub fn capture_import_opengl_texture(state: api.VKBackbufferCaptureState, frame:
     }
 }
 
-// pub const c_api = struct {
 fn vk_backbuffer_error_to_result(err: VkBackbufferErrors!void) api.vk_backbuffer_capture_result {
     err catch |e| {
         switch (e) {
@@ -327,4 +326,3 @@ pub export fn vk_backbuffer_capture_return_frame(state: api.VKBackbufferCaptureS
 pub export fn vk_backbuffer_capture_import_opengl_texture(state: api.VKBackbufferCaptureState, frame: *const api.VKBackbufferFrame, gl_tex: u32) callconv(.C) api.vk_backbuffer_capture_result {
     return vk_backbuffer_error_to_result(capture_import_opengl_texture(state, frame, gl_tex));
 }
-// };
