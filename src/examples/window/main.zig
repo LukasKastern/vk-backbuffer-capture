@@ -7,6 +7,7 @@ const c = @cImport({
     @cInclude("GL/glx.h");
     @cInclude("X11/X.h");
     @cInclude("X11/Xlib.h");
+    @cInclude("vulkan/vulkan_core.h");
 });
 
 const backbuffer_capture = @import("backbuffer-capture");
@@ -137,11 +138,23 @@ pub fn main() !void {
             if (handle_to_gl_tex.get(backbuffer_frame.frame_fd_opaque)) |gl| {
                 break :blk gl;
             } else {
-                var handle: u32 = 0;
-                try backbuffer_capture.capture_import_opengl_texture(state, &backbuffer_frame, &handle);
-                try handle_to_gl_tex.put(backbuffer_frame.frame_fd_opaque, handle);
+                var texture: u32 = 0;
+                _ = c.glGenTextures(1, &texture);
 
-                break :blk handle;
+                switch (backbuffer_frame.format) {
+                    c.VK_FORMAT_B8G8R8A8_UNORM...c.VK_FORMAT_B8G8R8A8_SRGB => {
+                        c.glBindTexture(c.GL_TEXTURE_2D, texture);
+                        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_SWIZZLE_B, c.GL_RED);
+                        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_SWIZZLE_R, c.GL_BLUE);
+                        c.glBindTexture(c.GL_TEXTURE_2D, 0);
+                    },
+                    else => {},
+                }
+
+                try backbuffer_capture.capture_import_opengl_texture(state, &backbuffer_frame, texture);
+                try handle_to_gl_tex.put(backbuffer_frame.frame_fd_opaque, texture);
+
+                break :blk texture;
             }
         };
 

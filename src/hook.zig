@@ -7,35 +7,9 @@ const c = @import("shared.zig").c;
 const HookSharedData = @import("shared.zig").HookSharedData;
 const formatSectionName = @import("shared.zig").formatSectionName;
 
-var submission_count: u32 = 0;
-
-var vk_queue_submit_original: ?*const fn (queue: vulkan.VkQueue, submitCount: c_uint, pSubmits: *const vulkan.VkSubmitInfo, fence: vulkan.VkFence) callconv(.C) vulkan.VkResult = null;
-var vk_queue_submit_2_original: ?*const fn (queue: vulkan.VkQueue, submitCount: c_uint, pSubmits: *const vulkan.VkSubmitInfo2, fence: vulkan.VkFence) callconv(.C) vulkan.VkResult = null;
-var vk_create_swapchain_original: ?*const fn (device: vulkan.VkDevice, pCreateInfo: *const vulkan.VkSwapchainCreateInfoKHR, pAllocator: *const vulkan.VkAllocationCallbacks, pSwapchain: *vulkan.VkSwapchainKHR) callconv(.C) vulkan.VkResult = null;
-
 const RTLD = struct {
     pub const NEXT = @as(*anyopaque, @ptrFromInt(@as(usize, @bitCast(@as(isize, -1)))));
 };
-
-pub export fn vkQueueSubmit2(queue: vulkan.VkQueue, submitCount: c_uint, pSubmits: *const vulkan.VkSubmitInfo2, fence: vulkan.VkFence) callconv(.C) vulkan.VkResult {
-    submission_count += 1;
-
-    if (vk_queue_submit_2_original == null) {
-        vk_queue_submit_2_original = @ptrCast(std.c.dlsym(RTLD.NEXT, "vkQueueSubmit2"));
-    }
-
-    return vk_queue_submit_2_original.?(queue, submitCount, pSubmits, fence);
-}
-
-pub export fn vkQueueSubmit(queue: vulkan.VkQueue, submitCount: c_uint, pSubmits: *const vulkan.VkSubmitInfo, fence: vulkan.VkFence) callconv(.C) vulkan.VkResult {
-    submission_count += 1;
-
-    if (vk_queue_submit_original == null) {
-        vk_queue_submit_original = @ptrCast(std.c.dlsym(RTLD.NEXT, "vkQueueSubmit"));
-    }
-
-    return vk_queue_submit_original.?(queue, submitCount, pSubmits, fence);
-}
 
 var sequence: u32 = 0;
 
@@ -625,11 +599,16 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
         var is_remote_process_alive = lock_result ==
             @intFromEnum(std.os.linux.E.BUSY);
 
+        var remote_died = capture_instance.was_remote_process_alive and !is_remote_process_alive;
+        if (lock_result == @intFromEnum(std.os.linux.E.OWNERDEAD)) {
+            remote_died = true;
+        }
+
         if (lock_result == 0) {
             _ = c.pthread_mutex_unlock(&capture_instance.shm_buf.remote_process_alive_lock);
         }
 
-        if (capture_instance.was_remote_process_alive and !is_remote_process_alive) {
+        if (remote_died) {
             // Remote process died, reallocate the swapchain data.
             // TODO: queue deallocation when it's safe to do
             std.log.info("Remote process died", .{});
@@ -713,6 +692,9 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
                 return error.FailedToInitializeMutex;
             }
         }
+
+        _ = c.pthread_mutex_lock(&shm_buf.lock);
+        defer _ = c.pthread_mutex_unlock(&shm_buf.lock);
 
         @memset(@as([*c]u8, @ptrCast(shm_buf))[0..@sizeOf(HookSharedData)], 0);
 
@@ -904,8 +886,7 @@ pub export fn vkCreateSwapchainKHR(device: vulkan.VkDevice, pCreateInfo: *const 
 
         return swapchain_res;
     } else {
-        //TODO: We should fallback to the default vkCreateSwapchainKhr
-        @panic("Create Swapchain Khr called but we do not have a valid mapping to the device");
+        return getApi().vk_create_swapchain_khr(device, pCreateInfo, pAllocator, pSwapchain);
     }
 }
 
@@ -921,6 +902,7 @@ const OriginalVulkanApi = struct {
     vk_get_device_proc_addr: *const fn (device: vulkan.VkDevice, pName: [*c]const u8) *const anyopaque,
     vk_get_device_queue: *const fn (device: vulkan.VkDevice, queue_family_index: c_uint, queue_index: c_uint, queue: *vulkan.VkQueue) callconv(.C) void,
     vk_queue_present_khr: *const fn (queue: vulkan.VkQueue, present_info: *const vulkan.VkPresentInfoKHR) callconv(.C) vulkan.VkResult,
+    vk_create_swapchain_khr: *const fn (device: vulkan.VkDevice, pCreateInfo: *const vulkan.VkSwapchainCreateInfoKHR, pAllocator: *const vulkan.VkAllocationCallbacks, pSwapchain: *vulkan.VkSwapchainKHR) vulkan.VkResult,
 };
 
 const DeviceApi = struct {
@@ -1040,6 +1022,7 @@ fn getApi() *const OriginalVulkanApi {
             .vk_get_device_proc_addr = @ptrCast(std.c.dlsym(RTLD.NEXT, "vkGetDeviceProcAddr")),
             .vk_get_device_queue = @ptrCast(std.c.dlsym(RTLD.NEXT, "vkGetDeviceQueue")),
             .vk_queue_present_khr = @ptrCast(std.c.dlsym(RTLD.NEXT, "vkQueuePresentKHR")),
+            .vk_create_swapchain_khr = @ptrCast(std.c.dlsym(RTLD.NEXT, "vkCreateSwapchainKHR")),
         };
     }
 

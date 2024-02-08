@@ -40,7 +40,25 @@ pub fn build(b: *std.Build) void {
     });
     sdk.linkLibC();
 
+    var shared_module = b.addModule("shared", .{
+        .source_file = .{ .path = "src/shared.zig" },
+    });
+
+    sdk.addModule("shared", shared_module);
+
     sdk.addIncludePath(.{ .path = "src/sdk/" });
+    var install_sdk_api = b.addInstallHeaderFile("src/sdk/api.h", "backbuffer-capture/api.h");
+
+    const c_api_example = b.addExecutable(.{
+        .name = "c_api-example",
+        .root_source_file = .{ .path = "src/examples/c_api/main.c" },
+        .target = target,
+        .optimize = optimize,
+    });
+
+    c_api_example.linkLibrary(sdk);
+    c_api_example.step.dependOn(&install_sdk_api.step);
+    c_api_example.addIncludePath(.{ .path = "zig-out/include" });
 
     const window = b.addExecutable(.{
         .name = "window-example",
@@ -55,10 +73,6 @@ pub fn build(b: *std.Build) void {
 
     window.linkLibrary(sdk);
 
-    var shared_module = b.addModule("shared", .{
-        .source_file = .{ .path = "src/shared.zig" },
-    });
-
     var sdk_module = b.addModule(
         "backbuffer-capture",
         .{
@@ -69,10 +83,10 @@ pub fn build(b: *std.Build) void {
         },
     );
     window.addModule("backbuffer-capture", sdk_module);
-
     window.addIncludePath(.{ .path = "src/sdk" });
 
     b.installArtifact(window);
     b.installArtifact(hook);
     b.installArtifact(sdk);
+    b.installArtifact(c_api_example);
 }

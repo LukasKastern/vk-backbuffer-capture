@@ -45,8 +45,8 @@ pub const HookSharedData = extern struct {
 
     lock: c.pthread_mutex_t,
 
+    // These are "robust" mutexes used to detect whether the hook and the "remote" process are still alive.
     hook_process_alive_lock: c.pthread_mutex_t,
-
     remote_process_alive_lock: c.pthread_mutex_t,
 };
 

@@ -199,7 +199,7 @@ fn dlsymLoadOrError(dl: ?*anyopaque, sym: [:0]const u8) VkBackbufferErrors!*anyo
     return symbol.?;
 }
 
-pub fn capture_import_opengl_texture(state: api.VKBackbufferCaptureState, frame: *const api.VKBackbufferFrame, out_opengl_tex: *u32) VkBackbufferErrors!void {
+pub fn capture_import_opengl_texture(state: api.VKBackbufferCaptureState, frame: *const api.VKBackbufferFrame, gl_tex: u32) VkBackbufferErrors!void {
     var backbuffer_capture_state = @as(*BackbufferCaptureState, @ptrCast(@alignCast(state)));
 
     if (backbuffer_capture_state.opengl_import_api == null) {
@@ -250,33 +250,16 @@ pub fn capture_import_opengl_texture(state: api.VKBackbufferCaptureState, frame:
         return error.ApiError;
     }
 
-    var texture: u32 = 0;
-    gl_api.gl_gen_textures(1, &texture);
-    if (gl_api.gl_get_error() != 0) {
-        return error.ApiError;
-    }
-
     const GL_TEXTURE_2D = @as(c_int, 0x0DE1);
-    gl_api.gl_bind_texture(GL_TEXTURE_2D, texture);
-
+    gl_api.gl_bind_texture(GL_TEXTURE_2D, gl_tex);
     defer gl_api.gl_bind_texture(GL_TEXTURE_2D, 0);
 
     // Ehhh. We shouldn't do this here lol.
     const GL_RGBA8 = @import("std").zig.c_translation.promoteIntLiteral(c_int, 0x8058, .hexadecimal);
     const GL_TEXTURE_TILING_EXT = @import("std").zig.c_translation.promoteIntLiteral(c_int, 0x9580, .hexadecimal);
-    // const GL_TILING_TYPES_EXT = @import("std").zig.c_translation.promoteIntLiteral(c_int, 0x9583, .hexadecimal);
     const GL_OPTIMAL_TILING_EXT = @import("std").zig.c_translation.promoteIntLiteral(c_int, 0x9584, .hexadecimal);
 
-    const GL_TEXTURE_SWIZZLE_B = @import("std").zig.c_translation.promoteIntLiteral(c_int, 0x8E44, .hexadecimal);
-    const GL_TEXTURE_SWIZZLE_R = @import("std").zig.c_translation.promoteIntLiteral(c_int, 0x8E42, .hexadecimal);
-    const GL_RED = @as(c_int, 0x1903);
-    const GL_GREEN = @as(c_int, 0x1904);
-    _ = GL_GREEN; // autofix
-    const GL_BLUE = @as(c_int, 0x1905);
-
     gl_api.gl_tex_parameter(GL_TEXTURE_2D, GL_TEXTURE_TILING_EXT, GL_OPTIMAL_TILING_EXT);
-    gl_api.gl_tex_parameter(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
-    gl_api.gl_tex_parameter(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_BLUE);
 
     if (gl_api.gl_get_error() != 0) {
         return error.ApiError;
@@ -295,44 +278,53 @@ pub fn capture_import_opengl_texture(state: api.VKBackbufferCaptureState, frame:
     if (gl_api.gl_get_error() != 0) {
         return error.ApiError;
     }
-
-    out_opengl_tex.* = texture;
 }
 
-const c_api = struct {
-    fn vk_backbuffer_error_to_result(err: VkBackbufferErrors!void) c.vk_backbuffer_capture_result {
-        err catch |e| {
-            switch (e) {
-                .RemoteNotFound => {
-                    return c.VkBackbufferCaptureResult_RemoteNotFound;
-                },
-                .OutOfMemory => {
-                    return c.VkBackbufferCaptureResult_OutOfMemory;
-                },
-                .VersionMismatch => {
-                    return c.VkBackbufferCaptureResult_VersionMismatch;
-                },
-                .NoSpaceLeft => {
-                    return c.VkBackbufferCaptureResult_NoSpaceLeft;
-                },
-                .ApiError => {
-                    return c.VkBackbufferCaptureResult_ApiError;
-                },
-            }
-        };
+// pub const c_api = struct {
+fn vk_backbuffer_error_to_result(err: VkBackbufferErrors!void) api.vk_backbuffer_capture_result {
+    err catch |e| {
+        switch (e) {
+            error.RemoteNotFound => {
+                return api.VkBackbufferCaptureResult_RemoteNotFound;
+            },
+            error.OutOfMemory => {
+                return api.VkBackbufferCaptureResult_OutOfMemory;
+            },
+            error.VersionMismatch => {
+                return api.VkBackbufferCaptureResult_VersionMismatch;
+            },
+            error.NoSpaceLeft => {
+                return api.VkBackbufferCaptureResult_NoSpaceLeft;
+            },
+            error.ApiError => {
+                return api.VkBackbufferCaptureResult_ApiError;
+            },
+            error.Timeout => {
+                return api.VkBackbufferCaptureResult_Timeout;
+            },
+        }
+    };
 
-        return c.VkBackbufferCaptureResult_Success;
-    }
+    return api.VkBackbufferCaptureResult_Success;
+}
 
-    pub export fn vk_backbuffer_capture_init(options: *const api.VKBackbufferInitializeOptions, out_state: *api.VKBackbufferCaptureState) callconv(.C) c.vk_backbuffer_capture_result {
-        return vk_backbuffer_error_to_result(capture_init(options, out_state));
-    }
+pub export fn vk_backbuffer_capture_init(options: *const api.VKBackbufferInitializeOptions, out_state: *api.VKBackbufferCaptureState) callconv(.C) api.vk_backbuffer_capture_result {
+    return vk_backbuffer_error_to_result(capture_init(options, out_state));
+}
 
-    pub export fn vk_backbuffer_capture_deinit(state: api.VKBackbufferCaptureState) callconv(.C) c.vk_backbuffer_capture_result {
-        return capture_deinit(state);
-    }
+pub export fn vk_backbuffer_capture_deinit(state: api.VKBackbufferCaptureState) callconv(.C) void {
+    capture_deinit(state);
+}
 
-    pub export fn vk_backbuffer_capture_next_frame(state: api.VKBackbufferCaptureState) callconv(.C) c.vk_backbuffer_capture_result {
-        return vk_backbuffer_error_to_result(capture_try_get_next_frame(state));
-    }
-};
+pub export fn vk_backbuffer_capture_next_frame(state: api.VKBackbufferCaptureState, wait_time: u32, frame: *api.VKBackbufferFrame) callconv(.C) api.vk_backbuffer_capture_result {
+    return vk_backbuffer_error_to_result(capture_try_get_next_frame(state, wait_time, frame));
+}
+
+pub export fn vk_backbuffer_capture_return_frame(state: api.VKBackbufferCaptureState, frame: *api.VKBackbufferFrame) callconv(.C) api.vk_backbuffer_capture_result {
+    return vk_backbuffer_error_to_result(capture_return_frame(state, frame));
+}
+
+pub export fn vk_backbuffer_capture_import_opengl_texture(state: api.VKBackbufferCaptureState, frame: *const api.VKBackbufferFrame, gl_tex: u32) callconv(.C) api.vk_backbuffer_capture_result {
+    return vk_backbuffer_error_to_result(capture_import_opengl_texture(state, frame, gl_tex));
+}
+// };
