@@ -13,6 +13,9 @@ const RTLD = struct {
 var sequence: u32 = 0;
 
 fn notifyWorker(capture_instance: *ActiveCaptureInstance) void {
+    // This will be overwritten by future capture instances. Cache this so we can clean it up later.
+    var original_shm_buf = capture_instance.shm_buf.*;
+
     while (!capture_instance.shutdown) {
         capture_instance.notify.sem.wait();
 
@@ -61,6 +64,18 @@ fn notifyWorker(capture_instance: *ActiveCaptureInstance) void {
             _ = c.sem_post(&capture_instance.shm_buf.new_texture_signal);
         }
     }
+
+    _ = c.pthread_mutex_destroy(&original_shm_buf.hook_process_alive_lock);
+    _ = c.pthread_mutex_destroy(&original_shm_buf.remote_process_alive_lock);
+    _ = c.pthread_mutex_destroy(&original_shm_buf.lock);
+    _ = c.sem_destroy(&original_shm_buf.new_texture_signal);
+
+    for (capture_instance.hook_images, 0..) |image, idx| {
+        _ = c.pthread_mutex_destroy(&original_shm_buf.texture_locks[idx]);
+        _ = image;
+    }
+
+    allocator.destroy(capture_instance);
 }
 
 fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, present_info: *vulkan.VkPresentInfoKHR) !void {
@@ -505,10 +520,19 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
 
         if (remote_died) {
             // Remote process died, reallocate the swapchain data.
-            // TODO: queue deallocation when it's safe to do
             std.log.info("Remote process died", .{});
 
             _ = c.pthread_mutex_unlock(&capture_instance.shm_buf.hook_process_alive_lock);
+
+            {
+                capture_instance.notify.lock.lock();
+                defer capture_instance.notify.lock.unlock();
+                _ = c.pthread_mutex_unlock(&capture_instance.shm_buf.hook_process_alive_lock);
+                capture_instance.shutdown = true;
+            }
+
+            capture_instance.notify.sem.post();
+
             active_capture_instance = null;
             return false;
         } else {
@@ -553,9 +577,16 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
 
     if (best_swapchain_data) |best_swapchain| {
         if (active_capture_instance) |active_capture| {
-
-            // TODO: queue deallocation when it's safe to do
             _ = c.pthread_mutex_unlock(&active_capture.shm_buf.hook_process_alive_lock);
+
+            {
+                active_capture.notify.lock.lock();
+                defer active_capture.notify.lock.unlock();
+                active_capture.shutdown = true;
+            }
+
+            active_capture.notify.sem.post();
+
             active_capture_instance = null;
         }
 
