@@ -12,6 +12,57 @@ const RTLD = struct {
 
 var sequence: u32 = 0;
 
+fn notifyWorker(capture_instance: *ActiveCaptureInstance) void {
+    while (!capture_instance.shutdown) {
+        capture_instance.notify.sem.wait();
+
+        if (capture_instance.shutdown) {
+            break;
+        }
+
+        capture_instance.notify.lock.lock();
+        var buffer_to_wait_on = capture_instance.notify.pending_buffers.orderedRemove(0);
+        capture_instance.notify.lock.unlock();
+
+        var hook_image = capture_instance.hook_images[buffer_to_wait_on];
+
+        vulkan.vkCall(vulkan.vkWaitForFences, .{
+            capture_instance.device.vk_device,
+            1,
+            &hook_image.vk_fence,
+            vulkan.VK_TRUE,
+            vulkan.UINT64_MAX,
+        }) catch break;
+
+        vulkan.vkCall(vulkan.vkResetFences, .{
+            capture_instance.device.vk_device,
+            1,
+            &hook_image.vk_fence,
+        }) catch break;
+
+        var post_sem = false;
+        {
+            _ = c.pthread_mutex_lock(&capture_instance.shm_buf.lock);
+            capture_instance.shm_buf.latest_texture = @intCast(buffer_to_wait_on);
+
+            var prev_val: c_int = 0;
+            _ = c.sem_getvalue(&capture_instance.shm_buf.new_texture_signal, &prev_val);
+
+            if (prev_val == 0) {
+                post_sem = true;
+            }
+
+            _ = c.pthread_mutex_unlock(&capture_instance.shm_buf.lock);
+        }
+
+        _ = c.pthread_mutex_unlock(&capture_instance.shm_buf.texture_locks[buffer_to_wait_on]);
+
+        if (post_sem) {
+            _ = c.sem_post(&capture_instance.shm_buf.new_texture_signal);
+        }
+    }
+}
+
 fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, present_info: *vulkan.VkPresentInfoKHR) !void {
     var capture_instance = active_capture_instance.?;
 
@@ -59,6 +110,7 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
 
     var hook_image = image_and_lock.hook_image;
     var lock = image_and_lock.lock;
+    _ = lock; // autofix
 
     if (queue_data.vk_command_pool == null) {
         var create_info = std.mem.zeroInit(vulkan.VkCommandPoolCreateInfo, .{
@@ -290,40 +342,13 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
         hook_image.vk_fence,
     });
 
-    try vulkan.vkCall(vulkan.vkWaitForFences, .{
-        device_data.vk_device,
-        1,
-        &hook_image.vk_fence,
-        vulkan.VK_TRUE,
-        vulkan.UINT64_MAX,
-    });
-
-    try vulkan.vkCall(vulkan.vkResetFences, .{
-        device_data.vk_device,
-        1,
-        &hook_image.vk_fence,
-    });
-
-    var post_sem = false;
     {
-        _ = c.pthread_mutex_lock(&capture_instance.shm_buf.lock);
-        capture_instance.shm_buf.latest_texture = @intCast(image_and_lock.idx);
-
-        var prev_val: c_int = 0;
-        _ = c.sem_getvalue(&capture_instance.shm_buf.new_texture_signal, &prev_val);
-
-        if (prev_val == 0) {
-            post_sem = true;
-        }
-
-        _ = c.pthread_mutex_unlock(&capture_instance.shm_buf.lock);
+        capture_instance.notify.lock.lock();
+        defer capture_instance.notify.lock.unlock();
+        try capture_instance.notify.pending_buffers.append(image_and_lock.idx);
     }
 
-    _ = c.pthread_mutex_unlock(lock);
-
-    if (post_sem) {
-        _ = c.sem_post(&capture_instance.shm_buf.new_texture_signal);
-    }
+    capture_instance.notify.sem.post();
 }
 
 const ActiveCaptureInstanceTimeoutNs = std.time.ns_per_s * 2;
@@ -464,7 +489,7 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
     active_capture_instance_lck.lock();
     defer active_capture_instance_lck.unlock();
 
-    if (active_capture_instance) |*capture_instance| {
+    if (active_capture_instance) |capture_instance| {
         var lock_result = c.pthread_mutex_trylock(&capture_instance.shm_buf.remote_process_alive_lock);
         var is_remote_process_alive = lock_result ==
             @intFromEnum(std.os.linux.E.BUSY);
@@ -628,14 +653,25 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
         shm_buf.size = @intCast(hook_images[0].size);
         shm_buf.sequence = next_active_capture_instance_seq;
 
-        active_capture_instance = .{
+        active_capture_instance = try allocator.create(ActiveCaptureInstance);
+
+        active_capture_instance.?.* = .{
             .device = device_data,
             .swapchain = best_swapchain.vk_swapchain,
             .last_render_time = std.time.nanoTimestamp(),
             .hook_images = hook_images,
             .shm_buf = shm_buf,
             .was_remote_process_alive = false,
+            .notify = .{
+                .lock = .{},
+                .pending_buffers = std.ArrayList(usize).init(allocator),
+                .worker = undefined,
+                .sem = .{},
+            },
+            .shutdown = false,
         };
+
+        active_capture_instance.?.notify.worker = try std.Thread.spawn(.{}, notifyWorker, .{active_capture_instance.?});
 
         next_active_capture_instance_seq += 1;
 
@@ -816,9 +852,18 @@ const ActiveCaptureInstance = struct {
     shm_buf: *HookSharedData,
 
     was_remote_process_alive: bool,
+
+    notify: struct {
+        lock: std.Thread.Mutex,
+        pending_buffers: std.ArrayList(usize),
+        worker: std.Thread,
+        sem: std.Thread.Semaphore,
+    },
+
+    shutdown: bool,
 };
 
-var active_capture_instance: ?ActiveCaptureInstance = null;
+var active_capture_instance: ?*ActiveCaptureInstance = null;
 var next_active_capture_instance_seq: usize = 1;
 var active_capture_instance_lck: std.Thread.Mutex = .{};
 
