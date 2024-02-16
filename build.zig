@@ -37,6 +37,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = .{ .path = "src/sdk/api.zig" },
     });
     sdk.linkLibC();
+    sdk.bundle_compiler_rt = true;
 
     var shared_module = b.addModule("shared", .{
         .source_file = .{ .path = "src/shared.zig" },
