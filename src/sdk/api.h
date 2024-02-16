@@ -40,7 +40,7 @@ vk_backbuffer_capture_result vk_backbuffer_capture_next_frame(VKBackbufferCaptur
 vk_backbuffer_capture_result vk_backbuffer_capture_return_frame(VKBackbufferCaptureState out_state, struct VKBackbufferFrame *frame);
 
 /** Utility method to acquire an opengl texture from an opaque file handle. */
-vk_backbuffer_capture_result vk_backbuffer_capture_import_opengl_texture(VKBackbufferCaptureState out_state, const struct VkBackbufferFrame *frame, uint32_t gl_texture);
+vk_backbuffer_capture_result vk_backbuffer_capture_import_opengl_texture(VKBackbufferCaptureState out_state, const struct VKBackbufferFrame *frame, uint32_t gl_texture);
 
 #ifdef __cplusplus
 }
