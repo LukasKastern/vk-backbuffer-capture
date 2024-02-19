@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
 
     const hook = b.addSharedLibrary(.{
         .name = "backbuffer-capture",
-        .root_source_file = .{ .path = "src/hook.zig" },
+        .root_source_file = .{ .path = "src/layer.zig" },
         .target = target,
         .optimize = optimize,
     });

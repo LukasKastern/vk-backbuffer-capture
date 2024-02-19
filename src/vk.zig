@@ -1,5 +1,11 @@
-const vulkan = @cImport(@cInclude("vulkan/vulkan_core.h"));
-pub usingnamespace @cImport(@cInclude("vulkan/vulkan_core.h"));
+const vulkan = struct {
+    pub usingnamespace @cImport({
+        @cInclude("vulkan/vulkan_core.h");
+        @cInclude("vulkan/vk_layer.h");
+    });
+};
+
+pub usingnamespace vulkan;
 
 pub fn vkCall(func: anytype, args: anytype) !void {
     const fn_type = @TypeOf(func);
