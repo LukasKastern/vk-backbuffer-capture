@@ -10,7 +10,7 @@ pub const SwapchainPipeline = struct {
     vk_pipeline: vulkan.VkPipeline,
 };
 
-pub fn createSwapchainPipeline(device: vulkan.VkDevice, color_format: vulkan.VkFormat) !SwapchainPipeline {
+pub fn createSwapchainPipeline(device_api: vulkan.DeviceApi, device: vulkan.VkDevice, color_format: vulkan.VkFormat) !SwapchainPipeline {
     var vk_fs_module: vulkan.VkShaderModule = blk: {
         var create_info = std.mem.zeroInit(vulkan.VkShaderModuleCreateInfo, .{
             .sType = vulkan.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -20,7 +20,7 @@ pub fn createSwapchainPipeline(device: vulkan.VkDevice, color_format: vulkan.VkF
         });
 
         var module: vulkan.VkShaderModule = undefined;
-        try vulkan.vkCall(vulkan.vkCreateShaderModule, .{ device, &create_info, null, &module });
+        try vulkan.vkCall(device_api.vkCreateShaderModule.?, .{ device, &create_info, null, &module });
 
         break :blk module;
     };
@@ -34,7 +34,7 @@ pub fn createSwapchainPipeline(device: vulkan.VkDevice, color_format: vulkan.VkF
         });
 
         var module: vulkan.VkShaderModule = undefined;
-        try vulkan.vkCall(vulkan.vkCreateShaderModule, .{ device, &create_info, null, &module });
+        try vulkan.vkCall(device_api.vkCreateShaderModule.?, .{ device, &create_info, null, &module });
 
         break :blk module;
     };
@@ -54,7 +54,7 @@ pub fn createSwapchainPipeline(device: vulkan.VkDevice, color_format: vulkan.VkF
             });
 
             var sampler: vulkan.VkSampler = undefined;
-            try vulkan.vkCall(vulkan.vkCreateSampler, .{ device, &vk_sampler_desc, null, &sampler });
+            try vulkan.vkCall(device_api.vkCreateSampler.?, .{ device, &vk_sampler_desc, null, &sampler });
             break :blk sampler;
         };
 
@@ -74,7 +74,7 @@ pub fn createSwapchainPipeline(device: vulkan.VkDevice, color_format: vulkan.VkF
         });
 
         var set_layout: vulkan.VkDescriptorSetLayout = undefined;
-        try vulkan.vkCall(vulkan.vkCreateDescriptorSetLayout, .{ device, &descriptor_set_layout_create_info, null, &set_layout });
+        try vulkan.vkCall(device_api.vkCreateDescriptorSetLayout.?, .{ device, &descriptor_set_layout_create_info, null, &set_layout });
         break :set_layout set_layout;
     };
 
@@ -89,7 +89,7 @@ pub fn createSwapchainPipeline(device: vulkan.VkDevice, color_format: vulkan.VkF
         });
 
         var vk_layout: vulkan.VkPipelineLayout = undefined;
-        try vulkan.vkCall(vulkan.vkCreatePipelineLayout, .{ device, &create_pipeline_layout_info, null, &vk_layout });
+        try vulkan.vkCall(device_api.vkCreatePipelineLayout.?, .{ device, &create_pipeline_layout_info, null, &vk_layout });
         break :layout vk_layout;
     };
 
@@ -229,7 +229,7 @@ pub fn createSwapchainPipeline(device: vulkan.VkDevice, color_format: vulkan.VkF
 
     var vk_pipeline: vulkan.VkPipeline = undefined;
     try vulkan.vkCall(
-        vulkan.vkCreateGraphicsPipelines,
+        device_api.vkCreateGraphicsPipelines.?,
         .{ device, null, 1, &pipeline_info, null, &vk_pipeline },
     );
 
