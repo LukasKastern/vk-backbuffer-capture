@@ -345,17 +345,16 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
         .pSignalSemaphores = &hook_image.vk_sem,
         .signalSemaphoreCount = 1,
     });
-    _ = submit_info; // autofix
 
     present_info.waitSemaphoreCount = 1;
     present_info.pWaitSemaphores = &hook_image.vk_sem;
 
-    // try vulkan.vkCall(device_data.api.vkQueueSubmit.?, .{
-    //     queue,
-    //     1,
-    //     &submit_info,
-    //     hook_image.vk_fence,
-    // });
+    try vulkan.vkCall(device_data.api.vkQueueSubmit.?, .{
+        queue,
+        1,
+        &submit_info,
+        hook_image.vk_fence,
+    });
 
     {
         capture_instance.notify.lock.lock();
@@ -714,7 +713,7 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
 
         _ = c.pthread_mutex_lock(&shm_buf.hook_process_alive_lock);
 
-        std.log.info("Set new swapchain active {} ({})", .{ @intFromPtr(best_swapchain.vk_swapchain), 1 });
+        std.log.info("Set new swapchain active {} ({})", .{ @intFromPtr(best_swapchain.vk_swapchain), sequence });
 
         return true;
     }
