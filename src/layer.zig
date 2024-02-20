@@ -368,7 +368,7 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
 const ActiveCaptureInstanceTimeoutNs = std.time.ns_per_s * 2;
 
 fn allocateHookImages(device_data: *VkDeviceData, swapchain_data: SwapchainData) ![]HookImageData {
-    var hook_images = allocator.alloc(HookImageData, 3) catch unreachable;
+    var hook_images = allocator.alloc(HookImageData, 4) catch unreachable;
     for (hook_images) |*hook_image| {
         var image_ext_create_info = std.mem.zeroInit(vulkan.VkExternalMemoryImageCreateInfo, .{
             .sType = vulkan.VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
