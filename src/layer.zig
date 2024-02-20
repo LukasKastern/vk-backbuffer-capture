@@ -10,9 +10,13 @@ const RTLD = struct {
     pub const NEXT = @as(*anyopaque, @ptrFromInt(@as(usize, @bitCast(@as(isize, -1)))));
 };
 
+const InstanceApi = vulkan.InstanceApi;
+const DeviceApi = vulkan.DeviceApi;
+
 var sequence: u32 = 0;
 
 fn notifyWorker(capture_instance: *ActiveCaptureInstance) void {
+
     // This will be overwritten by future capture instances. Cache this so we can clean it up later.
     var original_shm_buf = capture_instance.shm_buf.*;
 
@@ -29,7 +33,7 @@ fn notifyWorker(capture_instance: *ActiveCaptureInstance) void {
 
         var hook_image = capture_instance.hook_images[buffer_to_wait_on];
 
-        vulkan.vkCall(vulkan.vkWaitForFences, .{
+        vulkan.vkCall(capture_instance.device.api.vkWaitForFences.?, .{
             capture_instance.device.vk_device,
             1,
             &hook_image.vk_fence,
@@ -37,7 +41,7 @@ fn notifyWorker(capture_instance: *ActiveCaptureInstance) void {
             vulkan.UINT64_MAX,
         }) catch break;
 
-        vulkan.vkCall(vulkan.vkResetFences, .{
+        vulkan.vkCall(capture_instance.device.api.vkResetFences.?, .{
             capture_instance.device.vk_device,
             1,
             &hook_image.vk_fence,
@@ -134,7 +138,7 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
             .flags = vulkan.VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | vulkan.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
         });
 
-        try vulkan.vkCall(vulkan.vkCreateCommandPool, .{
+        try vulkan.vkCall(device_data.api.vkCreateCommandPool.?, .{
             device_data.vk_device,
             &create_info,
             null,
@@ -163,17 +167,12 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
                 .level = vulkan.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             });
 
-            var allocate = @as(
-                *const fn (device: vulkan.VkDevice, pAllocateInfo: [*c]const vulkan.VkCommandBufferAllocateInfo, pCommandBuffers: [*c]vulkan.VkCommandBuffer) vulkan.VkResult,
-                @ptrCast(vkGetDeviceProcAddr(device_data.vk_device, "vkAllocateCommandBuffers")),
-            );
-
-            try vulkan.vkCall(allocate, .{ device_data.vk_device, &allocate_info, cmd_buffer });
+            try vulkan.vkCall(device_data.api.vkAllocateCommandBuffers.?, .{ device_data.vk_device, &allocate_info, cmd_buffer });
         }
     }
 
     if (queue_data.pipeline == null) {
-        queue_data.pipeline = try pipeline.createSwapchainPipeline(device_data.vk_device, swapchain_data.format);
+        queue_data.pipeline = try pipeline.createSwapchainPipeline(device_data.api, device_data.vk_device, swapchain_data.format);
     }
 
     var cmd_buffer = queue_data.vk_command_buffers.?[buffer_idx];
@@ -199,14 +198,14 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
         .pColorAttachments = &attachment_info,
     });
 
-    try vulkan.vkCall(vulkan.vkResetCommandBuffer, .{ cmd_buffer, 0 });
+    try vulkan.vkCall(device_data.api.vkResetCommandBuffer.?, .{ cmd_buffer, 0 });
 
     const begin_info = std.mem.zeroInit(vulkan.VkCommandBufferBeginInfo, .{
         .sType = vulkan.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = vulkan.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     });
 
-    try vulkan.vkCall(vulkan.vkBeginCommandBuffer, .{ cmd_buffer, &begin_info });
+    try vulkan.vkCall(device_data.api.vkBeginCommandBuffer.?, .{ cmd_buffer, &begin_info });
 
     {
         const image_barrier = std.mem.zeroInit(vulkan.VkImageMemoryBarrier2, .{
@@ -230,10 +229,10 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
             .pImageMemoryBarriers = &image_barrier,
         });
 
-        try vulkan.vkCall(device_data.api.vk_cmd_pipeline_barrier, .{ cmd_buffer, &dep_info });
+        try vulkan.vkCall(device_data.api.vkCmdPipelineBarrier2.?, .{ cmd_buffer, &dep_info });
     }
 
-    try vulkan.vkCall(device_data.api.vk_cmd_begin_rendering, .{ cmd_buffer, &rendering_info });
+    try vulkan.vkCall(device_data.api.vkCmdBeginRendering.?, .{ cmd_buffer, &rendering_info });
     {
         var viewport = std.mem.zeroInit(vulkan.VkViewport, .{
             .maxDepth = @as(f32, 1),
@@ -241,7 +240,7 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
             .height = @as(f32, @floatFromInt(swapchain_data.height)),
         });
 
-        try vulkan.vkCall(vulkan.vkCmdSetViewport, .{ cmd_buffer, 0, 1, &viewport });
+        try vulkan.vkCall(device_data.api.vkCmdSetViewport.?, .{ cmd_buffer, 0, 1, &viewport });
 
         var scissors = std.mem.zeroInit(
             vulkan.VkRect2D,
@@ -253,9 +252,9 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
             },
         );
 
-        try vulkan.vkCall(vulkan.vkCmdSetScissor, .{ cmd_buffer, 0, 1, &scissors });
+        try vulkan.vkCall(device_data.api.vkCmdSetScissor.?, .{ cmd_buffer, 0, 1, &scissors });
 
-        try vulkan.vkCall(vulkan.vkCmdBindPipeline, .{ cmd_buffer, vulkan.VK_PIPELINE_BIND_POINT_GRAPHICS, queue_data.pipeline.?.vk_pipeline });
+        try vulkan.vkCall(device_data.api.vkCmdBindPipeline.?, .{ cmd_buffer, vulkan.VK_PIPELINE_BIND_POINT_GRAPHICS, queue_data.pipeline.?.vk_pipeline });
 
         var image_info = std.mem.zeroInit(vulkan.VkDescriptorImageInfo, .{
             .imageView = swapchain_data.backbuffer_image_views[buffer_idx],
@@ -277,12 +276,12 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
             .descriptorCount = 1,
         });
 
-        try vulkan.vkCall(device_data.api.vk_cmd_push_descriptor_set, .{ cmd_buffer, vulkan.VK_PIPELINE_BIND_POINT_GRAPHICS, queue_data.pipeline.?.vk_pipeline_layout, 0, 1, &write_info });
+        try vulkan.vkCall(device_data.api.vkCmdPushDescriptorSetKHR.?, .{ cmd_buffer, vulkan.VK_PIPELINE_BIND_POINT_GRAPHICS, queue_data.pipeline.?.vk_pipeline_layout, 0, 1, &write_info });
 
-        try vulkan.vkCall(vulkan.vkCmdDraw, .{ cmd_buffer, 3, 1, 0, 0 });
+        try vulkan.vkCall(device_data.api.vkCmdDraw.?, .{ cmd_buffer, 3, 1, 0, 0 });
     }
 
-    try vulkan.vkCall(device_data.api.vk_cmd_end_rendering, .{cmd_buffer});
+    try vulkan.vkCall(device_data.api.vkCmdEndRendering.?, .{cmd_buffer});
 
     {
         const image_barrier = std.mem.zeroInit(vulkan.VkImageMemoryBarrier2, .{
@@ -307,7 +306,7 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
             .pImageMemoryBarriers = &image_barrier,
         });
 
-        try vulkan.vkCall(device_data.api.vk_cmd_pipeline_barrier, .{ cmd_buffer, &dep_info });
+        try vulkan.vkCall(device_data.api.vkCmdPipelineBarrier2.?, .{ cmd_buffer, &dep_info });
     }
 
     {
@@ -332,10 +331,10 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
             .pImageMemoryBarriers = &image_barrier,
         });
 
-        try vulkan.vkCall(device_data.api.vk_cmd_pipeline_barrier, .{ cmd_buffer, &dep_info });
+        try vulkan.vkCall(device_data.api.vkCmdPipelineBarrier2.?, .{ cmd_buffer, &dep_info });
     }
 
-    try vulkan.vkCall(vulkan.vkEndCommandBuffer, .{cmd_buffer});
+    try vulkan.vkCall(device_data.api.vkEndCommandBuffer.?, .{cmd_buffer});
 
     const submit_info = std.mem.zeroInit(vulkan.VkSubmitInfo, .{
         .sType = vulkan.VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -350,7 +349,7 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
     present_info.waitSemaphoreCount = 1;
     present_info.pWaitSemaphores = &hook_image.vk_sem;
 
-    try vulkan.vkCall(vulkan.vkQueueSubmit, .{
+    try vulkan.vkCall(device_data.api.vkQueueSubmit.?, .{
         queue,
         1,
         &submit_info,
@@ -402,12 +401,12 @@ fn allocateHookImages(device_data: *VkDeviceData, swapchain_data: SwapchainData)
             .initialLayout = vulkan.VK_IMAGE_LAYOUT_UNDEFINED,
         });
 
-        if (vulkan.vkCreateImage(device_data.vk_device, &image_info, null, &hook_image.vk_image) != vulkan.VK_SUCCESS) {
+        if (device_data.api.vkCreateImage.?(device_data.vk_device, &image_info, null, &hook_image.vk_image) != vulkan.VK_SUCCESS) {
             return error.VkCreateImageFailed;
         }
 
         var memory_requirements: vulkan.VkMemoryRequirements = undefined;
-        try vulkan.vkCall(vulkan.vkGetImageMemoryRequirements, .{ device_data.vk_device, hook_image.vk_image, &memory_requirements });
+        try vulkan.vkCall(device_data.api.vkGetImageMemoryRequirements.?, .{ device_data.vk_device, hook_image.vk_image, &memory_requirements });
 
         hook_image.size = memory_requirements.size;
 
@@ -415,7 +414,7 @@ fn allocateHookImages(device_data: *VkDeviceData, swapchain_data: SwapchainData)
         {
             const memory_type_index = mem_type: {
                 var mem_props: vulkan.VkPhysicalDeviceMemoryProperties = undefined;
-                try vulkan.vkCall(vulkan.vkGetPhysicalDeviceMemoryProperties, .{ device_data.vk_phy_device, &mem_props });
+                try vulkan.vkCall(device_data.instance_data.api.vkGetPhysicalDeviceMemoryProperties.?, .{ device_data.vk_phy_device, &mem_props });
 
                 for (mem_props.memoryTypes[0..mem_props.memoryTypeCount], 0..) |prop, idx| {
                     if (memory_requirements.memoryTypeBits & (@as(u32, 1) << @intCast(idx)) == 0) {
@@ -446,7 +445,7 @@ fn allocateHookImages(device_data: *VkDeviceData, swapchain_data: SwapchainData)
             });
 
             var mem: vulkan.VkDeviceMemory = undefined;
-            try vulkan.vkCall(vulkan.vkAllocateMemory, .{ device_data.vk_device, &memory_allocate_info, null, &mem });
+            try vulkan.vkCall(device_data.api.vkAllocateMemory.?, .{ device_data.vk_device, &memory_allocate_info, null, &mem });
 
             var bind_info = std.mem.zeroInit(vulkan.VkBindImageMemoryInfo, .{
                 .sType = vulkan.VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO,
@@ -456,7 +455,7 @@ fn allocateHookImages(device_data: *VkDeviceData, swapchain_data: SwapchainData)
                 .memoryOffset = 0,
             });
 
-            try vulkan.vkCall(device_data.api.vk_bind_image_memory, .{ device_data.vk_device, 1, &bind_info });
+            try vulkan.vkCall(device_data.api.vkBindImageMemory2.?, .{ device_data.vk_device, 1, &bind_info });
 
             var get_memory_fd_info = std.mem.zeroInit(vulkan.VkMemoryGetFdInfoKHR, .{
                 .sType = vulkan.VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
@@ -464,7 +463,7 @@ fn allocateHookImages(device_data: *VkDeviceData, swapchain_data: SwapchainData)
                 .handleType = vulkan.VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
             });
 
-            try vulkan.vkCall(device_data.api.vk_get_memory_fd, .{ device_data.vk_device, &get_memory_fd_info, &hook_image.image_handle });
+            try vulkan.vkCall(device_data.api.vkGetMemoryFdKHR.?, .{ device_data.vk_device, &get_memory_fd_info, &hook_image.image_handle });
         }
 
         var info = std.mem.zeroInit(vulkan.VkImageViewCreateInfo, .{
@@ -479,7 +478,7 @@ fn allocateHookImages(device_data: *VkDeviceData, swapchain_data: SwapchainData)
             .image = hook_image.vk_image,
         });
 
-        if (vulkan.vkCreateImageView(device_data.vk_device, &info, null, &hook_image.vk_view) != vulkan.VK_SUCCESS) {
+        if (device_data.api.vkCreateImageView.?(device_data.vk_device, &info, null, &hook_image.vk_view) != vulkan.VK_SUCCESS) {
             return error.FailedToCreateImageView;
         }
 
@@ -487,14 +486,14 @@ fn allocateHookImages(device_data: *VkDeviceData, swapchain_data: SwapchainData)
             .sType = vulkan.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
         });
 
-        try vulkan.vkCall(vulkan.vkCreateFence, .{
+        try vulkan.vkCall(device_data.api.vkCreateFence.?, .{
             device_data.vk_device, &fence_create_info, null, &hook_image.vk_fence,
         });
 
         var sem_create_info = std.mem.zeroInit(vulkan.VkSemaphoreCreateInfo, .{
             .sType = vulkan.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
         });
-        try vulkan.vkCall(vulkan.vkCreateSemaphore, .{ device_data.vk_device, &sem_create_info, null, &hook_image.vk_sem });
+        try vulkan.vkCall(device_data.api.vkCreateSemaphore.?, .{ device_data.vk_device, &sem_create_info, null, &hook_image.vk_sem });
     }
 
     return hook_images;
@@ -558,6 +557,12 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
         var swapchain_data = blk: {
             for (device_data.swapchains.items) |chain_data| {
                 if (chain_data.vk_swapchain == swapchain) {
+
+                    // Wait for the chain to have received a few frames.
+                    if (chain_data.submission_count < 30) {
+                        continue;
+                    }
+
                     break :blk chain_data;
                 }
             }
@@ -708,7 +713,7 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
 
         _ = c.pthread_mutex_lock(&shm_buf.hook_process_alive_lock);
 
-        std.log.info("Set new swapchain active {} ({})", .{ @intFromPtr(best_swapchain.vk_swapchain), shm_buf.sequence });
+        std.log.info("Set new swapchain active {} ({})", .{ @intFromPtr(best_swapchain.vk_swapchain), sequence });
 
         return true;
     }
@@ -716,143 +721,9 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
     return false;
 }
 
-pub export fn vkQueuePresentKHR(queue: vulkan.VkQueue, present_info: *const vulkan.VkPresentInfoKHR) callconv(.C) vulkan.VkResult {
-    if (getVulkanDeviceDataFromVkQueue(queue)) |device_data| {
-        var present = present_info.*;
-        if (!device_data.had_error) {
-            var is_active = blk: {
-                break :blk isOrTrySetSwapchainActive(device_data, present_info.pSwapchains[0..present_info.swapchainCount]) catch |e| {
-                    switch (e) {
-                        else => {
-                            std.log.err("Error occured during isOrTrySetSwapchainActive invocation. Error: {s}", .{@errorName(e)});
-                            device_data.had_error = true;
-                            break :blk false;
-                        },
-                    }
-                };
-            };
-
-            if (is_active) {
-                copyIntoHookTexture(device_data, queue, &present) catch |e| {
-                    switch (e) {
-                        else => {
-                            std.log.err("Error occured during copyIntoHookTexture invocation. Error: {s}", .{@errorName(e)});
-                            device_data.had_error = true;
-                        },
-                    }
-                };
-            }
-        }
-        return device_data.api.vk_queue_present_khr(queue, &present);
-    } else {
-        return getApi().vk_queue_present_khr(queue, present_info);
-    }
-}
-
-fn rememberSwapchain(device_data: *VkDeviceData, swapchain: vulkan.VkSwapchainKHR, create_info: *const vulkan.VkSwapchainCreateInfoKHR) !void {
-    var swapchain_data = blk: {
-        var count: c_uint = 0;
-
-        if (vulkan.vkGetSwapchainImagesKHR(device_data.vk_device, swapchain, &count, null) != vulkan.VK_SUCCESS) {
-            std.log.warn("Failed to get swapchain images from chain {}", .{@intFromPtr(swapchain)});
-            return error.FailedToGetSwapchainimages;
-        }
-
-        var images = try allocator.alloc(vulkan.VkImage, count);
-        var image_views = try allocator.alloc(vulkan.VkImageView, count);
-
-        if (vulkan.vkGetSwapchainImagesKHR(device_data.vk_device, swapchain, &count, images.ptr) != vulkan.VK_SUCCESS) {
-            std.log.warn("Failed to get swapchain images from chain {}", .{@intFromPtr(swapchain)});
-            return error.FailedToGetSwapchainimages;
-        }
-
-        for (image_views, images[0..count]) |*view, image| {
-            var info = std.mem.zeroInit(vulkan.VkImageViewCreateInfo, .{
-                .sType = vulkan.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                .format = create_info.imageFormat,
-                .viewType = vulkan.VK_IMAGE_VIEW_TYPE_2D,
-                .subresourceRange = .{
-                    .aspectMask = vulkan.VK_IMAGE_ASPECT_COLOR_BIT,
-                    .layerCount = 1,
-                    .levelCount = 1,
-                },
-                .image = image,
-            });
-
-            if (vulkan.vkCreateImageView(device_data.vk_device, &info, null, view) != vulkan.VK_SUCCESS) {
-                return error.CreateImageViewFailed;
-            }
-
-            std.log.info("Created view for swapchain {} and image {}", .{ @intFromPtr(swapchain), @intFromPtr(image) });
-        }
-
-        break :blk .{
-            .vk_swapchain = swapchain,
-            .backbuffer_image_views = image_views,
-            .backbuffer_images = images,
-            .width = create_info.imageExtent.width,
-            .height = create_info.imageExtent.height,
-            .format = create_info.imageFormat,
-        };
-    };
-
-    try device_data.swapchains.append(swapchain_data);
-
-    std.log.info(
-        "Create swapchain {}x{} ({})",
-        .{ create_info.imageExtent.width, create_info.imageExtent.height, create_info.imageFormat },
-    );
-}
-
-pub export fn vkCreateSwapchainKHR(device: vulkan.VkDevice, pCreateInfo: *const vulkan.VkSwapchainCreateInfoKHR, pAllocator: *const vulkan.VkAllocationCallbacks, pSwapchain: *vulkan.VkSwapchainKHR) vulkan.VkResult {
-    if (getVulkanDeviceDataFromVkDevice(device)) |device_data| {
-        var create_info = pCreateInfo.*;
-        create_info.imageUsage |= vulkan.VK_IMAGE_USAGE_SAMPLED_BIT;
-        var swapchain_res = device_data.api.vk_create_swapchain_khr(device, &create_info, pAllocator, pSwapchain);
-
-        if (swapchain_res == vulkan.VK_SUCCESS) {
-            rememberSwapchain(device_data, pSwapchain.*, pCreateInfo) catch |e| {
-                switch (e) {
-                    else => {
-                        std.log.err("Failed to remember swapchain. Error: {s}", .{@errorName(e)});
-                        device_data.had_error = true;
-                    },
-                }
-            };
-        }
-
-        return swapchain_res;
-    } else {
-        return getApi().vk_create_swapchain_khr(device, pCreateInfo, pAllocator, pSwapchain);
-    }
-}
-
 var vk_device_proc_addr_original: ?*const fn (device: vulkan.VkDevice, name: [*c]const u8) *const anyopaque = null;
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator = gpa.allocator();
-
-const OriginalVulkanApi = struct {
-    vk_create_instance: *const fn (pCreateInfo: *const vulkan.VkInstanceCreateInfo, pAllocator: *const vulkan.VkAllocationCallbacks, pInstance: *vulkan.VkInstance) vulkan.VkResult,
-    vk_enumerate_physical_devices: *const fn (instance: vulkan.VkInstance, pPhysicalDeviceCount: [*c]u32, pPhysicalDevices: [*c]vulkan.VkPhysicalDevice) vulkan.VkResult,
-    vk_create_device: *const fn (physicalDevice: vulkan.VkPhysicalDevice, pCreateInfo: [*c]const vulkan.VkDeviceCreateInfo, pAllocator: [*c]const vulkan.VkAllocationCallbacks, pDevice: [*c]vulkan.VkDevice) vulkan.VkResult,
-    vk_get_instance_proc_addr: *const fn (instance: vulkan.VkInstance, pName: [*c]const u8) *const anyopaque,
-    vk_get_device_proc_addr: *const fn (device: vulkan.VkDevice, pName: [*c]const u8) *const anyopaque,
-    vk_get_device_queue: *const fn (device: vulkan.VkDevice, queue_family_index: c_uint, queue_index: c_uint, queue: *vulkan.VkQueue) callconv(.C) void,
-    vk_queue_present_khr: *const fn (queue: vulkan.VkQueue, present_info: *const vulkan.VkPresentInfoKHR) callconv(.C) vulkan.VkResult,
-    vk_create_swapchain_khr: *const fn (device: vulkan.VkDevice, pCreateInfo: *const vulkan.VkSwapchainCreateInfoKHR, pAllocator: *const vulkan.VkAllocationCallbacks, pSwapchain: *vulkan.VkSwapchainKHR) vulkan.VkResult,
-};
-
-const DeviceApi = struct {
-    vk_create_swapchain_khr: *const fn (device: vulkan.VkDevice, pCreateInfo: *const vulkan.VkSwapchainCreateInfoKHR, pAllocator: *const vulkan.VkAllocationCallbacks, pSwapchain: *vulkan.VkSwapchainKHR) vulkan.VkResult,
-    vk_queue_present_khr: *const fn (queue: vulkan.VkQueue, present_info: *const vulkan.VkPresentInfoKHR) callconv(.C) vulkan.VkResult,
-    vk_get_device_queue: *const fn (device: vulkan.VkDevice, queue_family_index: c_uint, queue_index: c_uint, queue: *vulkan.VkQueue) callconv(.C) void,
-    vk_bind_image_memory: *const fn (device: vulkan.VkDevice, bindInfoCount: u32, pBindInfos: [*c]const vulkan.VkBindImageMemoryInfo) vulkan.VkResult,
-    vk_cmd_pipeline_barrier: *const fn (cmd_buffer: vulkan.VkCommandBuffer, dep_info: [*c]const vulkan.VkDependencyInfo) callconv(.C) void,
-    vk_cmd_begin_rendering: *const fn (cmd_buffer: vulkan.VkCommandBuffer, rendering_info: [*c]const vulkan.VkRenderingInfo) callconv(.C) void,
-    vk_cmd_end_rendering: *const fn (cmd_buffer: vulkan.VkCommandBuffer) callconv(.C) void,
-    vk_cmd_push_descriptor_set: *const fn (commandBuffer: vulkan.VkCommandBuffer, pipelineBindPoint: vulkan.VkPipelineBindPoint, layout: vulkan.VkPipelineLayout, set: u32, descriptorWriteCount: u32, pDescriptorWrites: [*c]const vulkan.VkWriteDescriptorSet) callconv(.C) void,
-    vk_get_memory_fd: *const fn (device: vulkan.VkDevice, info: [*c]const vulkan.VkMemoryGetFdInfoKHR, [*c]c_int) callconv(.C) vulkan.VkResult,
-};
 
 const HookImageData = struct {
     vk_image: vulkan.VkImage,
@@ -907,6 +778,8 @@ const SwapchainData = struct {
     width: usize,
     height: usize,
     format: vulkan.VkFormat,
+
+    submission_count: usize,
 };
 
 const VkDeviceData = struct {
@@ -937,6 +810,7 @@ fn getVulkanDeviceDataFromVkQueue(queue: vulkan.VkQueue) ?*VkDeviceData {
 
 const VkInstanceData = struct {
     instance: vulkan.VkInstance,
+    api: InstanceApi,
     physical_devices: std.ArrayList(vulkan.VkPhysicalDevice),
     devices: std.ArrayList(*VkDeviceData),
 };
@@ -950,51 +824,390 @@ var vk_device_to_instance_lock = std.Thread.Mutex{};
 var vk_queue_to_device_data = std.AutoArrayHashMap(vulkan.VkQueue, *VkDeviceData).init(allocator);
 var vk_queue_to_device_lock = std.Thread.Mutex{};
 
-fn getApi() *const OriginalVulkanApi {
-    const lazily_loaded_api = struct {
-        var initialized: bool = false;
-        var api_data: OriginalVulkanApi = undefined;
+pub export fn vkQueuePresentKHR(queue: vulkan.VkQueue, present_info: *const vulkan.VkPresentInfoKHR) callconv(.C) vulkan.VkResult {
+    if (getVulkanDeviceDataFromVkQueue(queue)) |device_data| {
+        var present = present_info.*;
+        if (!device_data.had_error) {
+            for (device_data.swapchains.items) |*swapchain| {
+                for (present_info.pSwapchains[0..present_info.swapchainCount]) |in_swapchain| {
+                    if (in_swapchain == swapchain.vk_swapchain) {
+                        swapchain.submission_count += 1;
+                    }
+                }
+            }
+
+            var is_active = blk: {
+                break :blk isOrTrySetSwapchainActive(device_data, present_info.pSwapchains[0..present_info.swapchainCount]) catch |e| {
+                    switch (e) {
+                        else => {
+                            std.log.err("Error occured during isOrTrySetSwapchainActive invocation. Error: {s}", .{@errorName(e)});
+                            device_data.had_error = true;
+                            break :blk false;
+                        },
+                    }
+                };
+            };
+
+            if (is_active) {
+                copyIntoHookTexture(device_data, queue, &present) catch |e| {
+                    switch (e) {
+                        else => {
+                            std.log.err("Error occured during copyIntoHookTexture invocation. Error: {s}", .{@errorName(e)});
+                            device_data.had_error = true;
+                        },
+                    }
+                };
+            }
+        }
+        return device_data.api.vkQueuePresentKHR.?(queue, &present);
+    } else {
+        // std.log.err("vkQueuePresentKHR failed! We have no device data.", .{});
+        return vulkan.VK_SUCCESS;
+    }
+}
+
+fn rememberSwapchain(device_data: *VkDeviceData, swapchain: vulkan.VkSwapchainKHR, create_info: *const vulkan.VkSwapchainCreateInfoKHR) !void {
+    var swapchain_data = blk: {
+        var count: c_uint = 0;
+
+        if (device_data.api.vkGetSwapchainImagesKHR.?(device_data.vk_device, swapchain, &count, null) != vulkan.VK_SUCCESS) {
+            std.log.warn("Failed to get swapchain images from chain {}", .{@intFromPtr(swapchain)});
+            return error.FailedToGetSwapchainimages;
+        }
+
+        var images = try allocator.alloc(vulkan.VkImage, count);
+        var image_views = try allocator.alloc(vulkan.VkImageView, count);
+
+        if (device_data.api.vkGetSwapchainImagesKHR.?(device_data.vk_device, swapchain, &count, images.ptr) != vulkan.VK_SUCCESS) {
+            std.log.warn("Failed to get swapchain images from chain {}", .{@intFromPtr(swapchain)});
+            return error.FailedToGetSwapchainimages;
+        }
+
+        for (image_views, images[0..count]) |*view, image| {
+            var info = std.mem.zeroInit(vulkan.VkImageViewCreateInfo, .{
+                .sType = vulkan.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .format = create_info.imageFormat,
+                .viewType = vulkan.VK_IMAGE_VIEW_TYPE_2D,
+                .subresourceRange = .{
+                    .aspectMask = vulkan.VK_IMAGE_ASPECT_COLOR_BIT,
+                    .layerCount = 1,
+                    .levelCount = 1,
+                },
+                .image = image,
+            });
+
+            if (device_data.api.vkCreateImageView.?(device_data.vk_device, &info, null, view) != vulkan.VK_SUCCESS) {
+                return error.CreateImageViewFailed;
+            }
+
+            std.log.info("Created view for swapchain {} and image {}", .{ @intFromPtr(swapchain), @intFromPtr(image) });
+        }
+
+        break :blk .{
+            .vk_swapchain = swapchain,
+            .backbuffer_image_views = image_views,
+            .backbuffer_images = images,
+            .width = create_info.imageExtent.width,
+            .height = create_info.imageExtent.height,
+            .format = create_info.imageFormat,
+            .submission_count = 0,
+        };
     };
 
-    if (!lazily_loaded_api.initialized) {
-        lazily_loaded_api.initialized = true;
-        lazily_loaded_api.api_data = .{
-            .vk_create_instance = @ptrCast(std.c.dlsym(RTLD.NEXT, "vkCreateInstance")),
-            .vk_enumerate_physical_devices = @ptrCast(std.c.dlsym(RTLD.NEXT, "vkEnumeratePhysicalDevices")),
-            .vk_create_device = @ptrCast(std.c.dlsym(RTLD.NEXT, "vkCreateDevice")),
-            .vk_get_instance_proc_addr = @ptrCast(std.c.dlsym(RTLD.NEXT, "vkGetInstanceProcAddr")),
-            .vk_get_device_proc_addr = @ptrCast(std.c.dlsym(RTLD.NEXT, "vkGetDeviceProcAddr")),
-            .vk_get_device_queue = @ptrCast(std.c.dlsym(RTLD.NEXT, "vkGetDeviceQueue")),
-            .vk_queue_present_khr = @ptrCast(std.c.dlsym(RTLD.NEXT, "vkQueuePresentKHR")),
-            .vk_create_swapchain_khr = @ptrCast(std.c.dlsym(RTLD.NEXT, "vkCreateSwapchainKHR")),
+    try device_data.swapchains.append(swapchain_data);
+
+    std.log.info(
+        "Create swapchain {}x{} ({})",
+        .{ create_info.imageExtent.width, create_info.imageExtent.height, create_info.imageFormat },
+    );
+}
+
+pub fn vkCreateSwapchainKHR(device: vulkan.VkDevice, pCreateInfo: *const vulkan.VkSwapchainCreateInfoKHR, pAllocator: *const vulkan.VkAllocationCallbacks, pSwapchain: *vulkan.VkSwapchainKHR) vulkan.VkResult {
+    if (getVulkanDeviceDataFromVkDevice(device)) |device_data| {
+        var create_info = pCreateInfo.*;
+        create_info.imageUsage |= vulkan.VK_IMAGE_USAGE_SAMPLED_BIT;
+        var swapchain_res = device_data.api.vkCreateSwapchainKHR.?(device, &create_info, pAllocator, pSwapchain);
+
+        if (swapchain_res == vulkan.VK_SUCCESS) {
+            rememberSwapchain(device_data, pSwapchain.*, pCreateInfo) catch |e| {
+                switch (e) {
+                    else => {
+                        std.log.err("Failed to remember swapchain. Error: {s}", .{@errorName(e)});
+                        device_data.had_error = true;
+                    },
+                }
+            };
+        }
+
+        return swapchain_res;
+    } else {
+        std.log.err("vkCreateSwapchainKHR failed, we have no device data", .{});
+        return vulkan.VK_ERROR_UNKNOWN;
+    }
+}
+
+fn rememberQueue(device_data: *VkDeviceData, family_index: u32, queue: vulkan.VkQueue) void {
+    for (device_data.queues.items) |known_queue| {
+        if (queue == known_queue.vk_queue) {
+            return;
+        }
+    }
+
+    vk_queue_to_device_lock.lock();
+    defer vk_queue_to_device_lock.unlock();
+
+    std.log.info("Found new queue: {}", .{@intFromPtr(queue)});
+
+    vk_queue_to_device_data.put(queue, device_data) catch unreachable;
+    device_data.queues.append(.{
+        .vk_queue = queue,
+        .family_index = family_index,
+    }) catch unreachable;
+}
+
+pub export fn vkGetDeviceQueue(device: vulkan.VkDevice, queue_family_index: c_uint, queue_index: c_uint, queue: *vulkan.VkQueue) callconv(.C) void {
+    if (getVulkanDeviceDataFromVkDevice(device)) |device_data| {
+        device_data.api.vkGetDeviceQueue.?(device, queue_family_index, queue_index, queue);
+        rememberQueue(device_data, queue_family_index, queue.*);
+    } else {
+        std.log.err("vkGetDeviceQueue called but we have no device data", .{});
+    }
+}
+
+fn rememberPhysicalDevices(instance_data: *VkInstanceData, phys_devices: []vulkan.VkPhysicalDevice) !void {
+    try instance_data.physical_devices.ensureUnusedCapacity(phys_devices.len);
+
+    for (phys_devices) |physical_device| {
+        var is_device_known = blk: {
+            for (instance_data.physical_devices.items) |known_device| {
+                if (physical_device == known_device) {
+                    break :blk true;
+                }
+            }
+
+            break :blk false;
+        };
+
+        if (!is_device_known) {
+            try instance_data.physical_devices.append(physical_device);
+            std.log.info("Instance {} found physical device {}", .{ @intFromPtr(instance_data), @intFromPtr(physical_device) });
+        }
+    }
+}
+
+pub export fn vkEnumeratePhysicalDevices(instance: vulkan.VkInstance, pPhysicalDeviceCount: [*c]u32, pPhysicalDevices: [*c]vulkan.VkPhysicalDevice) callconv(.C) vulkan.VkResult {
+    var instance_data_maybe: ?*VkInstanceData = blk: {
+        vk_instances_lock.lock();
+        defer vk_instances_lock.unlock();
+
+        for (vk_instances.items) |item| {
+            if (item.instance == instance) {
+                break :blk item;
+            }
+        }
+
+        break :blk null;
+    };
+
+    if (instance_data_maybe) |instance_data| {
+        var result = instance_data.api.vkEnumeratePhysicalDevices.?(instance, pPhysicalDeviceCount, pPhysicalDevices);
+        if (result == vulkan.VK_SUCCESS) {
+            if (pPhysicalDevices != null) {
+                rememberPhysicalDevices(instance_data, pPhysicalDevices[0..@intCast(pPhysicalDeviceCount.*)]) catch |e| {
+                    switch (e) {
+                        else => {
+                            std.log.err("Failed to rememberPhysicalDevices. Error: {s}", .{@errorName(e)});
+                            return vulkan.VK_ERROR_UNKNOWN;
+                        },
+                    }
+                };
+            }
+        }
+
+        return result;
+    } else {
+        std.log.err("Enumerate Physical Devices called but we have no instance data", .{});
+        return vulkan.VK_ERROR_UNKNOWN;
+    }
+}
+
+fn injectDeviceFeatures(create_info: *vulkan.VkDeviceCreateInfo) void {
+    // Inject our extensions
+    {
+        const our_extensions = [_][*:0]const u8{
+            vulkan.VK_KHR_BIND_MEMORY_2_EXTENSION_NAME,
+            vulkan.VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
+            vulkan.VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME,
+            vulkan.VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME,
+            vulkan.VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME,
+            vulkan.VK_KHR_MAINTENANCE_2_EXTENSION_NAME,
+            vulkan.VK_KHR_MULTIVIEW_EXTENSION_NAME,
+            vulkan.VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
+            vulkan.VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
+            vulkan.VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+        };
+
+        var all_extensions = allocator.alloc([*:0]const u8, our_extensions.len + create_info.enabledExtensionCount) catch unreachable;
+
+        if (create_info.ppEnabledExtensionNames != null) {
+            for (create_info.ppEnabledExtensionNames[0..create_info.enabledExtensionCount], 0..) |extension, idx| {
+                all_extensions[idx] = extension;
+            }
+        }
+
+        for (our_extensions) |our_extension| {
+            var has_extension = blk: {
+                for (all_extensions[0..create_info.enabledExtensionCount]) |extension| {
+                    if (std.mem.eql(u8, std.mem.span(our_extension), std.mem.span(extension))) {
+                        break :blk true;
+                    }
+                }
+
+                break :blk false;
+            };
+
+            if (!has_extension) {
+                all_extensions[create_info.enabledExtensionCount] = our_extension;
+                create_info.enabledExtensionCount += 1;
+            }
+        }
+
+        create_info.ppEnabledExtensionNames = @ptrCast(all_extensions);
+    }
+
+    var enabled_features = if (create_info.pEnabledFeatures != null) create_info.pEnabledFeatures.* else std.mem.zeroes(vulkan.VkPhysicalDeviceFeatures);
+    enabled_features.depthClamp = vulkan.VK_TRUE;
+    create_info.pEnabledFeatures = &enabled_features;
+
+    // This does leak ;)
+    var synch2_feature_khr = gpa.allocator().create(vulkan.VkPhysicalDeviceSynchronization2FeaturesKHR) catch unreachable;
+    var dynamic_rendering = gpa.allocator().create(vulkan.VkPhysicalDeviceDynamicRenderingFeaturesKHR) catch unreachable;
+
+    var create_info_as_in_struct = @as(*const vulkan.VkBaseInStructure, @ptrCast(@alignCast(create_info)));
+    if (!vulkan.vkStructureHasNext(create_info_as_in_struct, vulkan.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR)) {
+        synch2_feature_khr.* = std.mem.zeroInit(vulkan.VkPhysicalDeviceSynchronization2FeaturesKHR, .{
+            .sType = vulkan.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR,
+            .pNext = null,
+            .synchronization2 = vulkan.VK_TRUE,
+        });
+
+        var next = create_info.pNext;
+        synch2_feature_khr.pNext = @ptrCast(@constCast(next));
+        create_info.pNext = synch2_feature_khr;
+    }
+
+    if (!vulkan.vkStructureHasNext(create_info_as_in_struct, vulkan.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR)) {
+        dynamic_rendering.* = std.mem.zeroInit(vulkan.VkPhysicalDeviceDynamicRenderingFeaturesKHR, .{
+            .sType = vulkan.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR,
+            .pNext = null,
+            .dynamicRendering = vulkan.VK_TRUE,
+        });
+
+        var next = create_info.pNext;
+        dynamic_rendering.pNext = @ptrCast(@constCast(next));
+        create_info.pNext = dynamic_rendering;
+    }
+}
+
+fn rememberNewDevice(instance_data: *VkInstanceData, physical_device: vulkan.VkPhysicalDevice, device: vulkan.VkDevice, get_proc_addr: vulkan.PFN_vkGetDeviceProcAddr) !void {
+    var device_data = try allocator.create(VkDeviceData);
+
+    var api: DeviceApi = undefined;
+    inline for (std.meta.fields(DeviceApi)) |field| {
+        comptime var name_buffer: [field.name.len + 1:0]u8 = undefined;
+        comptime {
+            std.mem.copy(u8, name_buffer[0..field.name.len], field.name);
+            name_buffer[field.name.len] = 0;
+        }
+
+        @field(api, field.name) = @ptrCast(get_proc_addr.?(device, &name_buffer));
+
+        if (@field(api, field.name) == null) {
+            std.log.err("Couldn't find function {s}", .{field.name});
+            return error.FunctionNotFound;
+        }
+    }
+
+    device_data.* = .{
+        .vk_device = device,
+        .vk_phy_device = physical_device,
+        .api = api,
+        .instance_data = instance_data,
+        .queues = std.ArrayList(QueueData).initCapacity(allocator, 8) catch unreachable,
+        .swapchains = std.ArrayList(SwapchainData).initCapacity(allocator, 8) catch unreachable,
+    };
+
+    try instance_data.devices.append(device_data);
+
+    //
+    {
+        vk_device_to_instance_lock.lock();
+        defer vk_device_to_instance_lock.unlock();
+
+        try vk_device_to_device_data.put(device, device_data);
+    }
+
+    std.log.info("Instance {} found device {}", .{ @intFromPtr(instance_data), @intFromPtr(device) });
+}
+
+pub export fn vkCreateDevice(physicalDevice: vulkan.VkPhysicalDevice, pCreateInfo: [*c]const vulkan.VkDeviceCreateInfo, pAllocator: [*c]const vulkan.VkAllocationCallbacks, pDevice: [*c]vulkan.VkDevice) vulkan.VkResult {
+    var create_info = pCreateInfo.*;
+
+    injectDeviceFeatures(&create_info);
+
+    var instance_data_maybe: ?*VkInstanceData = blk: {
+        vk_instances_lock.lock();
+        defer vk_instances_lock.unlock();
+
+        for (vk_instances.items) |item| {
+            for (item.physical_devices.items) |phys_dev| {
+                if (phys_dev == physicalDevice) {
+                    break :blk item;
+                }
+            }
+        }
+
+        break :blk null;
+    };
+
+    if (instance_data_maybe == null) {
+        std.log.err("Couldn't find instance associated with physical device {}", .{@intFromPtr(physicalDevice)});
+        return vulkan.VK_ERROR_INITIALIZATION_FAILED;
+    }
+
+    var layer_create_info: ?*vulkan.VkLayerDeviceCreateInfo = @constCast(@alignCast(@ptrCast(create_info.pNext)));
+    while (layer_create_info != null and (layer_create_info.?.sType != vulkan.VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO or layer_create_info.?.function != vulkan.VK_LAYER_LINK_INFO)) {
+        layer_create_info = @constCast(@alignCast(@ptrCast(layer_create_info.?.pNext)));
+    }
+
+    if (layer_create_info == null) {
+        return vulkan.VK_ERROR_INITIALIZATION_FAILED;
+    }
+
+    var get_instance_proc_addr = layer_create_info.?.u.pLayerInfo.*.pfnNextGetInstanceProcAddr;
+    var get_device_proc_addr = layer_create_info.?.u.pLayerInfo.*.pfnNextGetDeviceProcAddr;
+
+    var create_device: vulkan.PFN_vkCreateDevice = @ptrCast(get_instance_proc_addr.?(null, "vkCreateDevice"));
+
+    layer_create_info.?.u.pLayerInfo = layer_create_info.?.u.pLayerInfo.*.pNext;
+
+    var result = create_device.?(physicalDevice, &create_info, pAllocator, pDevice);
+
+    if (result == vulkan.VK_SUCCESS) {
+        // std.log.info("Crete dev", .{});
+        rememberNewDevice(instance_data_maybe.?, physicalDevice, pDevice.*, get_device_proc_addr) catch |e| {
+            switch (e) {
+                else => {
+                    std.log.err("Failed to rememberNewDevice. Error: {s}", .{@errorName(e)});
+                },
+            }
         };
     }
 
-    return &lazily_loaded_api.api_data;
+    return result;
 }
 
-fn vkAllocateInstanceData(instance: vulkan.VkInstance) !void {
-    vk_instances_lock.lock();
-    defer vk_instances_lock.unlock();
-
-    var instance_data = try allocator.create(VkInstanceData);
-    instance_data.* = .{
-        .instance = instance,
-        .physical_devices = std.ArrayList(vulkan.VkPhysicalDevice).init(allocator),
-        .devices = std.ArrayList(*VkDeviceData).init(allocator),
-    };
-
-    try vk_instances.append(instance_data);
-    std.log.info("Allocated instance data {} for {}", .{ @intFromPtr(instance_data), @intFromPtr(instance) });
-}
-
-pub export fn vkCreateInstance(pCreateInfo: *const vulkan.VkInstanceCreateInfo, pAllocator: *const vulkan.VkAllocationCallbacks, pInstance: *vulkan.VkInstance) vulkan.VkResult {
-    var layer_count: c_uint = 0;
-    _ = vulkan.vkEnumerateInstanceLayerProperties(&layer_count, null);
-    var layers = allocator.alloc(vulkan.VkLayerProperties, layer_count) catch unreachable;
-    _ = vulkan.vkEnumerateInstanceLayerProperties(&layer_count, layers.ptr);
-
-    var create_info = pCreateInfo.*;
+fn injectInstanceFeatures(create_info: *vulkan.VkInstanceCreateInfo) void {
 
     // Inject our extensions
     {
@@ -1027,273 +1240,124 @@ pub export fn vkCreateInstance(pCreateInfo: *const vulkan.VkInstanceCreateInfo, 
 
         create_info.ppEnabledExtensionNames = @ptrCast(all_extensions);
     }
+}
 
-    var result = getApi().vk_create_instance(&create_info, pAllocator, pInstance);
-    if (result == vulkan.VK_SUCCESS) {
+fn vkAllocateInstanceData(instance: vulkan.VkInstance, get_proc_addr: vulkan.PFN_vkGetInstanceProcAddr) !void {
+    vk_instances_lock.lock();
+    defer vk_instances_lock.unlock();
+
+    var api: InstanceApi = undefined;
+    inline for (std.meta.fields(InstanceApi)) |field| {
+        comptime var name_buffer: [field.name.len + 1:0]u8 = undefined;
+        comptime {
+            std.mem.copy(u8, name_buffer[0..field.name.len], field.name);
+            name_buffer[field.name.len] = 0;
+        }
+
+        @field(api, field.name) = @ptrCast(get_proc_addr.?(instance, &name_buffer));
+
+        if (@field(api, field.name) == null) {
+            std.log.err("Couldn't find function {s}", .{field.name});
+            return error.FunctionNotFound;
+        }
+    }
+
+    var instance_data = try allocator.create(VkInstanceData);
+    instance_data.* = .{
+        .api = api,
+        .instance = instance,
+        .physical_devices = std.ArrayList(vulkan.VkPhysicalDevice).init(allocator),
+        .devices = std.ArrayList(*VkDeviceData).init(allocator),
+    };
+
+    try vk_instances.append(instance_data);
+    std.log.info("Allocated instance data {} for {}", .{ @intFromPtr(instance_data), @intFromPtr(instance) });
+}
+
+pub export fn vkCreateInstance(pCreateInfo: *const vulkan.VkInstanceCreateInfo, pAllocator: *const vulkan.VkAllocationCallbacks, pInstance: *vulkan.VkInstance) callconv(.C) vulkan.VkResult {
+    var layer_create_info: ?*vulkan.VkLayerInstanceCreateInfo = @constCast(@alignCast(@ptrCast(pCreateInfo.pNext)));
+    while (layer_create_info != null and (layer_create_info.?.sType != vulkan.VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO or layer_create_info.?.function != vulkan.VK_LAYER_LINK_INFO)) {
+        layer_create_info = @constCast(@alignCast(@ptrCast(layer_create_info.?.pNext)));
+    }
+
+    if (layer_create_info == null) {
+        return vulkan.VK_ERROR_INITIALIZATION_FAILED;
+    }
+
+    var get_instance_proc_addr = layer_create_info.?.u.pLayerInfo.*.pfnNextGetInstanceProcAddr;
+    layer_create_info.?.u.pLayerInfo = layer_create_info.?.u.pLayerInfo.*.pNext;
+
+    var info = pCreateInfo.*;
+    injectInstanceFeatures(&info);
+
+    var create_func: vulkan.PFN_vkCreateInstance = @ptrCast(get_instance_proc_addr.?(null, "vkCreateInstance"));
+    var res = create_func.?(&info, pAllocator, pInstance);
+
+    if (res == vulkan.VK_SUCCESS) {
         std.log.info("Creating instace", .{});
-        vkAllocateInstanceData(pInstance.*) catch |e| {
+
+        vkAllocateInstanceData(pInstance.*, get_instance_proc_addr) catch |e| {
             switch (e) {
                 else => {
                     std.log.err("Failed to allocate instance data. Error: {s}", .{@errorName(e)});
+                    return vulkan.VK_ERROR_INITIALIZATION_FAILED;
                 },
             }
         };
     }
 
-    return result;
+    return res;
 }
 
-fn rememberPhysicalDevices(instance: vulkan.VkInstance, phys_devices: []vulkan.VkPhysicalDevice) !void {
+pub export fn vkGetInstanceProcAddr(instance: vulkan.VkInstance, pName: [*c]const u8) callconv(.C) ?*const anyopaque {
+    const OverridenFunctions = &.{
+        .{ &vkGetInstanceProcAddr, "vkGetInstanceProcAddr" },
+        .{ &vkCreateInstance, "vkCreateInstance" },
+        .{ &vkCreateDevice, "vkCreateDevice" },
+        .{ &vkEnumeratePhysicalDevices, "vkEnumeratePhysicalDevices" },
+    };
+
+    // std.log.info("Looking for func: {s}", .{std.mem.span(pName)});
+
+    inline for (OverridenFunctions) |function| {
+        if (std.mem.eql(u8, std.mem.span(pName), function[1])) {
+            return function[0];
+        }
+    }
+
     vk_instances_lock.lock();
     defer vk_instances_lock.unlock();
-
-    var instance_data_maybe: ?*VkInstanceData = null;
-
-    for (vk_instances.items) |item| {
-        if (item.instance == instance) {
-            instance_data_maybe = item;
+    for (vk_instances.items) |known_instance| {
+        if (instance == known_instance.instance) {
+            return known_instance.api.vkGetInstanceProcAddr.?(instance, pName);
         }
     }
 
-    if (instance_data_maybe) |instance_data| {
-        try instance_data.physical_devices.ensureUnusedCapacity(phys_devices.len);
-
-        for (phys_devices) |physical_device| {
-            var is_device_known = blk: {
-                for (instance_data.physical_devices.items) |known_device| {
-                    if (physical_device == known_device) {
-                        break :blk true;
-                    }
-                }
-
-                break :blk false;
-            };
-
-            if (!is_device_known) {
-                try instance_data.physical_devices.append(physical_device);
-                std.log.info("Instance {} found physical device {}", .{ @intFromPtr(instance_data), @intFromPtr(physical_device) });
-            }
-        }
-    } else {
-        std.log.warn("Couldn't find instance data for vkInstance: {}", .{@intFromPtr(instance)});
-    }
+    return null;
 }
 
-pub export fn vkEnumeratePhysicalDevices(instance: vulkan.VkInstance, pPhysicalDeviceCount: [*c]u32, pPhysicalDevices: [*c]vulkan.VkPhysicalDevice) vulkan.VkResult {
-    var result = getApi().vk_enumerate_physical_devices(instance, pPhysicalDeviceCount, pPhysicalDevices);
-    if (result == vulkan.VK_SUCCESS) {
-        if (pPhysicalDevices != null) {
-            rememberPhysicalDevices(instance, pPhysicalDevices[0..@intCast(pPhysicalDeviceCount.*)]) catch |e| {
-                switch (e) {
-                    else => {
-                        std.log.err("Failed to rememberPhysicalDevices. Error: {s}", .{@errorName(e)});
-                    },
-                }
-            };
-        }
-    }
-
-    return result;
-}
-
-fn rememberQueue(device_data: *VkDeviceData, family_index: u32, queue: vulkan.VkQueue) void {
-    for (device_data.queues.items) |known_queue| {
-        if (queue == known_queue.vk_queue) {
-            return;
-        }
-    }
-
-    vk_queue_to_device_lock.lock();
-    defer vk_queue_to_device_lock.unlock();
-
-    std.log.info("Found new queue: {}", .{@intFromPtr(queue)});
-
-    vk_queue_to_device_data.put(queue, device_data) catch unreachable;
-    device_data.queues.append(.{
-        .vk_queue = queue,
-        .family_index = family_index,
-    }) catch unreachable;
-}
-
-pub export fn vkGetDeviceQueue(device: vulkan.VkDevice, queue_family_index: c_uint, queue_index: c_uint, queue: *vulkan.VkQueue) callconv(.C) void {
-    if (getVulkanDeviceDataFromVkDevice(device)) |device_data| {
-        device_data.api.vk_get_device_queue(device, queue_family_index, queue_index, queue);
-        rememberQueue(device_data, queue_family_index, queue.*);
-    } else {
-        getApi().vk_get_device_queue(device, queue_family_index, queue_index, queue);
-    }
-}
-
-fn rememberNewDevice(physical_device: vulkan.VkPhysicalDevice, device: [*c]vulkan.VkDevice) !void {
-    vk_instances_lock.lock();
-    defer vk_instances_lock.unlock();
-
-    var instance_data_maybe: ?*VkInstanceData = null;
-
-    main_loop: for (vk_instances.items) |item| {
-        for (item.physical_devices.items) |phy| {
-            if (phy == physical_device) {
-                // Found the matching instance.
-                instance_data_maybe = item;
-                break :main_loop;
-            }
-        }
-    }
-
-    if (instance_data_maybe) |instance_data| {
-        var api = getApi();
-
-        var device_data = try allocator.create(VkDeviceData);
-        device_data.* = .{
-            .vk_device = device.*,
-            .vk_phy_device = physical_device,
-            .api = .{
-                .vk_create_swapchain_khr = @ptrCast(api.vk_get_device_proc_addr(device.*, "vkCreateSwapchainKHR")),
-                .vk_queue_present_khr = @ptrCast(api.vk_get_device_proc_addr(device.*, "vkQueuePresentKHR")),
-                .vk_get_device_queue = @ptrCast(api.vk_get_device_proc_addr(device.*, "vkGetDeviceQueue")),
-                .vk_bind_image_memory = @ptrCast(api.vk_get_device_proc_addr(device.*, "vkBindImageMemory2KHR")),
-                .vk_cmd_pipeline_barrier = @ptrCast(api.vk_get_device_proc_addr(device.*, "vkCmdPipelineBarrier2KHR")),
-                .vk_cmd_begin_rendering = @ptrCast(api.vk_get_device_proc_addr(device.*, "vkCmdBeginRenderingKHR")),
-                .vk_cmd_end_rendering = @ptrCast(api.vk_get_device_proc_addr(device.*, "vkCmdEndRenderingKHR")),
-                .vk_cmd_push_descriptor_set = @ptrCast(api.vk_get_device_proc_addr(device.*, "vkCmdPushDescriptorSetKHR")),
-                .vk_get_memory_fd = @ptrCast(api.vk_get_device_proc_addr(device.*, "vkGetMemoryFdKHR")),
-            },
-
-            .instance_data = instance_data,
-            .queues = std.ArrayList(QueueData).initCapacity(allocator, 8) catch unreachable,
-            .swapchains = std.ArrayList(SwapchainData).initCapacity(allocator, 8) catch unreachable,
-        };
-
-        try instance_data.devices.append(device_data);
-
-        //
-        {
-            vk_device_to_instance_lock.lock();
-            defer vk_device_to_instance_lock.unlock();
-
-            try vk_device_to_device_data.put(device.*, device_data);
-        }
-
-        std.log.info("Instance {} found device {}", .{ @intFromPtr(instance_data), @intFromPtr(device.*) });
-    } else {
-        std.log.warn("Couldn't find vkInstance for physicalDevice {}. Will ignore vkDevice: {}", .{ @intFromPtr(physical_device), @intFromPtr(device.*) });
-    }
-}
-
-pub export fn vkCreateDevice(physicalDevice: vulkan.VkPhysicalDevice, pCreateInfo: [*c]const vulkan.VkDeviceCreateInfo, pAllocator: [*c]const vulkan.VkAllocationCallbacks, pDevice: [*c]vulkan.VkDevice) vulkan.VkResult {
-    var create_info = pCreateInfo.*;
-
-    // Inject our extensions
-    {
-        const our_extensions = [_][*:0]const u8{
-            vulkan.VK_KHR_BIND_MEMORY_2_EXTENSION_NAME,
-            vulkan.VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
-            vulkan.VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME,
-            vulkan.VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME,
-            vulkan.VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME,
-            vulkan.VK_KHR_MAINTENANCE_2_EXTENSION_NAME,
-            vulkan.VK_KHR_MULTIVIEW_EXTENSION_NAME,
-            vulkan.VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
-            vulkan.VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
-            vulkan.VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
-        };
-
-        var all_extensions = allocator.alloc([*:0]const u8, our_extensions.len + create_info.enabledExtensionCount) catch unreachable;
-
-        for (create_info.ppEnabledExtensionNames[0..create_info.enabledExtensionCount], 0..) |extension, idx| {
-            all_extensions[idx] = extension;
-        }
-
-        for (our_extensions) |our_extension| {
-            var has_extension = blk: {
-                for (all_extensions[0..create_info.enabledExtensionCount]) |extension| {
-                    if (std.mem.eql(u8, std.mem.span(our_extension), std.mem.span(extension))) {
-                        break :blk true;
-                    }
-                }
-
-                break :blk false;
-            };
-
-            if (!has_extension) {
-                all_extensions[create_info.enabledExtensionCount] = our_extension;
-                create_info.enabledExtensionCount += 1;
-            }
-        }
-
-        create_info.ppEnabledExtensionNames = @ptrCast(all_extensions);
-    }
-
-    var enabled_features = if (create_info.pEnabledFeatures != null) create_info.pEnabledFeatures.* else std.mem.zeroes(vulkan.VkPhysicalDeviceFeatures);
-    enabled_features.depthClamp = vulkan.VK_TRUE;
-    create_info.pEnabledFeatures = &enabled_features;
-
-    var synch2_feature_khr: vulkan.VkPhysicalDeviceSynchronization2FeaturesKHR = undefined;
-    var dynamic_rendering: vulkan.VkPhysicalDeviceDynamicRenderingFeaturesKHR = undefined;
-
-    var create_info_as_in_struct = @as(*const vulkan.VkBaseInStructure, @ptrCast(@alignCast(&create_info)));
-    if (!vulkan.vkStructureHasNext(create_info_as_in_struct, vulkan.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR)) {
-        synch2_feature_khr = std.mem.zeroInit(vulkan.VkPhysicalDeviceSynchronization2FeaturesKHR, .{
-            .sType = vulkan.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR,
-            .pNext = null,
-            .synchronization2 = vulkan.VK_TRUE,
-        });
-
-        var next = create_info.pNext;
-        synch2_feature_khr.pNext = @ptrCast(@constCast(next));
-        create_info.pNext = &synch2_feature_khr;
-    }
-
-    if (!vulkan.vkStructureHasNext(create_info_as_in_struct, vulkan.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR)) {
-        dynamic_rendering = std.mem.zeroInit(vulkan.VkPhysicalDeviceDynamicRenderingFeaturesKHR, .{
-            .sType = vulkan.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR,
-            .pNext = null,
-            .dynamicRendering = vulkan.VK_TRUE,
-        });
-
-        var next = create_info.pNext;
-        dynamic_rendering.pNext = @ptrCast(@constCast(next));
-        create_info.pNext = &dynamic_rendering;
-    }
-
-    var result = getApi().vk_create_device(physicalDevice, &create_info, pAllocator, pDevice);
-
-    if (result == vulkan.VK_SUCCESS) {
-        rememberNewDevice(physicalDevice, pDevice) catch |e| {
-            switch (e) {
-                else => {
-                    std.log.err("Failed to rememberNewDevice. Error: {s}", .{@errorName(e)});
-                },
-            }
-        };
-    }
-
-    return result;
-}
-
-pub export fn vkGetInstanceProcAddr(instance: vulkan.VkInstance, pName: [*c]const u8) *const anyopaque {
-    if (std.mem.eql(u8, std.mem.span(pName), "vkGetDeviceProcAddr")) {
-        return @ptrCast(&vkGetDeviceProcAddr);
-    }
-
-    return getApi().vk_get_instance_proc_addr(instance, pName);
-}
-
-pub export fn vkGetDeviceProcAddr(device: vulkan.VkDevice, name: [*c]const u8) *const anyopaque {
+pub export fn vkGetDeviceProcAddr(device: vulkan.VkDevice, name: [*c]const u8) callconv(.C) ?*const anyopaque {
     var name_as_span = std.mem.span(name);
 
-    // Only redirect API calls if we have a valid mapping for the vk_device.
-    if (getVulkanDeviceDataFromVkDevice(device) != null) {
-        if (std.mem.eql(u8, name_as_span, "vkCreateSwapchainKHR")) {
-            return @ptrCast(&vkCreateSwapchainKHR);
-        }
-        if (std.mem.eql(u8, name_as_span, "vkQueuePresentKHR")) {
-            return @ptrCast(&vkQueuePresentKHR);
-        }
-        if (std.mem.eql(u8, name_as_span, "vkGetDeviceQueue")) {
-            return @ptrCast(&vkGetDeviceQueue);
+    const OverridenFunctions = &.{
+        .{ &vkCreateDevice, "vkCreateDevice" },
+        .{ &vkGetDeviceQueue, "vkGetDeviceQueue" },
+        .{ &vkCreateSwapchainKHR, "vkCreateSwapchainKHR" },
+        .{ &vkQueuePresentKHR, "vkQueuePresentKHR" },
+    };
+
+    // std.log.info("Looking for func: {s}", .{name_as_span});
+
+    inline for (OverridenFunctions) |function| {
+        if (std.mem.eql(u8, name_as_span, function[1])) {
+            return function[0];
         }
     }
 
-    return @ptrCast(getApi().vk_get_device_proc_addr(device, name));
+    // Only redirect API calls if we have a valid mapping for the vk_device.
+    if (getVulkanDeviceDataFromVkDevice(device)) |device_data| {
+        return device_data.api.vkGetDeviceProcAddr.?(device, name);
+    }
+
+    return null;
 }

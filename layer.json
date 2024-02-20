@@ -1,0 +1,14 @@
+{
+  "file_format_version" : "1.0.0",
+  "layer" : {
+    "name": "VK_LAYER_BACKBUFFER_CAPTURE_default",
+    "type": "GLOBAL",
+    "library_path": "./zig-out/lib/libbackbuffer-capture.so",
+    "api_version": "1.0.0",
+    "implementation_version": "1",
+    "description": "https://github.com/LukasKastern/vk-backbuffer-capture",
+    "disable_environment": {
+      "DISABLE_VK_LAYER_BACKBUFFER_CAPTURE_default": "1"
+    }
+  }
+}
