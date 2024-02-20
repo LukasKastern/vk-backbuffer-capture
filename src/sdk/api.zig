@@ -117,7 +117,7 @@ pub fn capture_init(options: *const api.VKBackbufferInitializeOptions, out_state
     backbuffer_capture_state.opengl_import_api = null;
     backbuffer_capture_state.texture_handles = handles;
 
-    std.log.info("Hooked to {s} ({})", .{ shm_section_name, shm_buf.sequence });
+    std.log.info("Hooked to {s} ({}) NumTextures: ({})", .{ shm_section_name, shm_buf.sequence, shm_buf.num_textures });
 
     out_state.* = @ptrCast(backbuffer_capture_state);
 }
