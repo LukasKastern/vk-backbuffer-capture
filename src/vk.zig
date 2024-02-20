@@ -11,9 +11,6 @@ pub const InstanceApi = struct {
     vkCreateInstance: vulkan.PFN_vkCreateInstance,
     vkEnumeratePhysicalDevices: vulkan.PFN_vkEnumeratePhysicalDevices,
     vkGetInstanceProcAddr: vulkan.PFN_vkGetInstanceProcAddr,
-    vkGetDeviceProcAddr: vulkan.PFN_vkGetDeviceProcAddr,
-    vkQueuePresentKHR: vulkan.PFN_vkQueuePresentKHR,
-    vkCreateSwapchainKHR: vulkan.PFN_vkCreateSwapchainKHR,
     vkGetPhysicalDeviceMemoryProperties: vulkan.PFN_vkGetPhysicalDeviceMemoryProperties,
 };
 

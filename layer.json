@@ -7,6 +7,11 @@
     "api_version": "1.0.0",
     "implementation_version": "1",
     "description": "https://github.com/LukasKastern/vk-backbuffer-capture",
+    "functions": {
+       "vkGetInstanceProcAddr": "vkBackbufferCapture_vkGetInstanceProcAddr",
+       "vkGetDeviceProcAddr": "vkBackbufferCapture_vkGetDeviceProcAddr",
+       "vkNegotiateLoaderLayerInterfaceVersion": "vkNegotiateLoaderLayerInterfaceVersion"
+    },
     "disable_environment": {
       "DISABLE_VK_LAYER_BACKBUFFER_CAPTURE_default": "1"
     }

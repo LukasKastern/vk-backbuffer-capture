@@ -109,7 +109,7 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
         _ = c.pthread_mutex_lock(&capture_instance.shm_buf.lock);
         defer _ = c.pthread_mutex_unlock(&capture_instance.shm_buf.lock);
 
-        for (capture_instance.hook_images, capture_instance.shm_buf.texture_locks[0..capture_instance.hook_images.len], 0..) |hook_image, *lock, idx| {
+        for (capture_instance.hook_images, capture_instance.shm_buf.texture_locks[0..capture_instance.hook_images.len], 0..) |*hook_image, *lock, idx| {
             if (idx == capture_instance.shm_buf.latest_texture) {
                 continue;
             }
@@ -824,7 +824,7 @@ var vk_device_to_instance_lock = std.Thread.Mutex{};
 var vk_queue_to_device_data = std.AutoArrayHashMap(vulkan.VkQueue, *VkDeviceData).init(allocator);
 var vk_queue_to_device_lock = std.Thread.Mutex{};
 
-pub export fn vkQueuePresentKHR(queue: vulkan.VkQueue, present_info: *const vulkan.VkPresentInfoKHR) callconv(.C) vulkan.VkResult {
+pub fn vkQueuePresentKHR(queue: vulkan.VkQueue, present_info: *const vulkan.VkPresentInfoKHR) callconv(.C) vulkan.VkResult {
     if (getVulkanDeviceDataFromVkQueue(queue)) |device_data| {
         var present = present_info.*;
         if (!device_data.had_error) {
@@ -965,7 +965,7 @@ fn rememberQueue(device_data: *VkDeviceData, family_index: u32, queue: vulkan.Vk
     }) catch unreachable;
 }
 
-pub export fn vkGetDeviceQueue(device: vulkan.VkDevice, queue_family_index: c_uint, queue_index: c_uint, queue: *vulkan.VkQueue) callconv(.C) void {
+pub fn vkGetDeviceQueue(device: vulkan.VkDevice, queue_family_index: c_uint, queue_index: c_uint, queue: *vulkan.VkQueue) callconv(.C) void {
     if (getVulkanDeviceDataFromVkDevice(device)) |device_data| {
         device_data.api.vkGetDeviceQueue.?(device, queue_family_index, queue_index, queue);
         rememberQueue(device_data, queue_family_index, queue.*);
@@ -995,7 +995,7 @@ fn rememberPhysicalDevices(instance_data: *VkInstanceData, phys_devices: []vulka
     }
 }
 
-pub export fn vkEnumeratePhysicalDevices(instance: vulkan.VkInstance, pPhysicalDeviceCount: [*c]u32, pPhysicalDevices: [*c]vulkan.VkPhysicalDevice) callconv(.C) vulkan.VkResult {
+pub fn vkEnumeratePhysicalDevices(instance: vulkan.VkInstance, pPhysicalDeviceCount: [*c]u32, pPhysicalDevices: [*c]vulkan.VkPhysicalDevice) callconv(.C) vulkan.VkResult {
     var instance_data_maybe: ?*VkInstanceData = blk: {
         vk_instances_lock.lock();
         defer vk_instances_lock.unlock();
@@ -1150,7 +1150,7 @@ fn rememberNewDevice(instance_data: *VkInstanceData, physical_device: vulkan.VkP
     std.log.info("Instance {} found device {}", .{ @intFromPtr(instance_data), @intFromPtr(device) });
 }
 
-pub export fn vkCreateDevice(physicalDevice: vulkan.VkPhysicalDevice, pCreateInfo: [*c]const vulkan.VkDeviceCreateInfo, pAllocator: [*c]const vulkan.VkAllocationCallbacks, pDevice: [*c]vulkan.VkDevice) vulkan.VkResult {
+pub fn vkCreateDevice(physicalDevice: vulkan.VkPhysicalDevice, pCreateInfo: [*c]const vulkan.VkDeviceCreateInfo, pAllocator: [*c]const vulkan.VkAllocationCallbacks, pDevice: [*c]vulkan.VkDevice) vulkan.VkResult {
     var create_info = pCreateInfo.*;
 
     injectDeviceFeatures(&create_info);
@@ -1274,7 +1274,7 @@ fn vkAllocateInstanceData(instance: vulkan.VkInstance, get_proc_addr: vulkan.PFN
     std.log.info("Allocated instance data {} for {}", .{ @intFromPtr(instance_data), @intFromPtr(instance) });
 }
 
-pub export fn vkCreateInstance(pCreateInfo: *const vulkan.VkInstanceCreateInfo, pAllocator: *const vulkan.VkAllocationCallbacks, pInstance: *vulkan.VkInstance) callconv(.C) vulkan.VkResult {
+pub fn vkCreateInstance(pCreateInfo: *const vulkan.VkInstanceCreateInfo, pAllocator: *const vulkan.VkAllocationCallbacks, pInstance: *vulkan.VkInstance) callconv(.C) vulkan.VkResult {
     var layer_create_info: ?*vulkan.VkLayerInstanceCreateInfo = @constCast(@alignCast(@ptrCast(pCreateInfo.pNext)));
     while (layer_create_info != null and (layer_create_info.?.sType != vulkan.VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO or layer_create_info.?.function != vulkan.VK_LAYER_LINK_INFO)) {
         layer_create_info = @constCast(@alignCast(@ptrCast(layer_create_info.?.pNext)));
@@ -1309,15 +1309,16 @@ pub export fn vkCreateInstance(pCreateInfo: *const vulkan.VkInstanceCreateInfo, 
     return res;
 }
 
-pub export fn vkGetInstanceProcAddr(instance: vulkan.VkInstance, pName: [*c]const u8) callconv(.C) ?*const anyopaque {
+pub export fn vkBackbufferCapture_vkGetInstanceProcAddr(instance: vulkan.VkInstance, pName: [*c]const u8) callconv(.C) ?*const anyopaque {
     const OverridenFunctions = &.{
-        .{ &vkGetInstanceProcAddr, "vkGetInstanceProcAddr" },
+        .{ &vkBackbufferCapture_vkGetInstanceProcAddr, "vkGetInstanceProcAddr" },
         .{ &vkCreateInstance, "vkCreateInstance" },
         .{ &vkCreateDevice, "vkCreateDevice" },
         .{ &vkEnumeratePhysicalDevices, "vkEnumeratePhysicalDevices" },
+        .{ &vkBackbufferCapture_vkGetDeviceProcAddr, "vkGetDeviceProcAddr" },
     };
 
-    // std.log.info("Looking for func: {s}", .{std.mem.span(pName)});
+    std.log.info("Looking for instance func: {s}", .{std.mem.span(pName)});
 
     inline for (OverridenFunctions) |function| {
         if (std.mem.eql(u8, std.mem.span(pName), function[1])) {
@@ -1336,14 +1337,17 @@ pub export fn vkGetInstanceProcAddr(instance: vulkan.VkInstance, pName: [*c]cons
     return null;
 }
 
-pub export fn vkGetDeviceProcAddr(device: vulkan.VkDevice, name: [*c]const u8) callconv(.C) ?*const anyopaque {
+pub export fn vkBackbufferCapture_vkGetDeviceProcAddr(device: vulkan.VkDevice, name: [*c]const u8) callconv(.C) ?*const anyopaque {
     var name_as_span = std.mem.span(name);
+
+    std.log.info("Looking for device funcc: {s}", .{name_as_span});
 
     const OverridenFunctions = &.{
         .{ &vkCreateDevice, "vkCreateDevice" },
         .{ &vkGetDeviceQueue, "vkGetDeviceQueue" },
         .{ &vkCreateSwapchainKHR, "vkCreateSwapchainKHR" },
         .{ &vkQueuePresentKHR, "vkQueuePresentKHR" },
+        .{ &vkBackbufferCapture_vkGetDeviceProcAddr, "vkGetDeviceProcAddr" },
     };
 
     // std.log.info("Looking for func: {s}", .{name_as_span});
@@ -1360,4 +1364,20 @@ pub export fn vkGetDeviceProcAddr(device: vulkan.VkDevice, name: [*c]const u8) c
     }
 
     return null;
+}
+
+pub export fn vkNegotiateLoaderLayerInterfaceVersion(negoatiate_interface: *vulkan.VkNegotiateLayerInterface) callconv(.C) vulkan.VkResult {
+    if (negoatiate_interface.sType != vulkan.LAYER_NEGOTIATE_INTERFACE_STRUCT) {
+        return vulkan.VK_ERROR_INITIALIZATION_FAILED;
+    }
+    std.log.info("Negotiating interface", .{});
+    negoatiate_interface.pNext = null;
+
+    if (negoatiate_interface.loaderLayerInterfaceVersion >= 2) {
+        negoatiate_interface.pfnGetInstanceProcAddr = @ptrCast(&vkBackbufferCapture_vkGetInstanceProcAddr);
+        negoatiate_interface.pfnGetDeviceProcAddr = @ptrCast(&vkBackbufferCapture_vkGetDeviceProcAddr);
+        negoatiate_interface.pfnGetPhysicalDeviceProcAddr = null;
+    }
+
+    return vulkan.VK_SUCCESS;
 }
