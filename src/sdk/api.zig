@@ -158,6 +158,11 @@ pub fn capture_try_get_next_frame(state: api.VKBackbufferCaptureState, wait_time
 
     defer _ = c.pthread_mutex_unlock(&backbuffer_capture_state.shared_data.lock);
 
+    if (backbuffer_capture_state.shared_data.shutdown) {
+        std.log.info("Got shutdown signal from remote", .{});
+        return error.RemoteNotFound;
+    }
+
     _ = c.pthread_mutex_trylock(&backbuffer_capture_state.shared_data.texture_locks[@intCast(backbuffer_capture_state.shared_data.latest_texture)]);
 
     out_frame.format = backbuffer_capture_state.shared_data.format;
