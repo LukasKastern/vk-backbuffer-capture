@@ -10,7 +10,7 @@
     "functions": {
        "vkGetInstanceProcAddr": "vkBackbufferCapture_vkGetInstanceProcAddr",
        "vkGetDeviceProcAddr": "vkBackbufferCapture_vkGetDeviceProcAddr",
-       "vkNegotiateLoaderLayerInterfaceVersion": "vkNegotiateLoaderLayerInterfaceVersion"
+       "vkNegotiateLoaderLayerInterfaceVersion": "vkBackbufferCapture_vkNegotiateLoaderLayerInterfaceVersion"
     },
     "disable_environment": {
       "DISABLE_VK_LAYER_BACKBUFFER_CAPTURE_default": "1"
