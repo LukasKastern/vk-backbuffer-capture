@@ -123,7 +123,9 @@ pub fn capture_init(options: *const api.VKBackbufferInitializeOptions, out_state
 }
 
 pub fn capture_deinit(state: api.VKBackbufferCaptureState) void {
-    allocator.destroy(@as(*BackbufferCaptureState, @ptrCast(@alignCast(state))));
+    var backbuffer_capture_state = @as(*BackbufferCaptureState, @ptrCast(@alignCast(state)));
+    _ = c.munmap(backbuffer_capture_state.shared_data, @sizeOf(shared.HookSharedData));
+    allocator.destroy(backbuffer_capture_state);
 }
 
 pub fn capture_try_get_next_frame(state: api.VKBackbufferCaptureState, wait_time_ns: u32, out_frame: *api.VKBackbufferFrame) VkBackbufferErrors!void {

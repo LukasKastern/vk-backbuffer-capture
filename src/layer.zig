@@ -634,7 +634,7 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
 
         _ = c.shm_unlink(shm_section_name);
 
-        var shm_handle = c.shm_open(shm_section_name, c.O_CREAT | c.O_RDWR, c.S_IRUSR | c.S_IWUSR | c.S_IXUSR);
+        var shm_handle = c.shm_open(shm_section_name, c.O_CREAT | c.O_EXCL | c.O_RDWR, c.S_IRUSR | c.S_IWUSR | c.S_IXUSR);
         if (shm_handle == -1) {
             return error.FailedToOpenBackbufferHook;
         }
