@@ -75,26 +75,43 @@ fn notifyWorker(capture_instance: *ActiveCaptureInstance) void {
     if (capture_instance.shutdown.? != .RemoteDied) {
         //TODO: Fix deadlock when remote dies while we are shutting down ;)
 
+        std.log.debug("Going into shmbuf lock", .{});
+
         // Tell remote that we are shutting down.
         _ = c.pthread_mutex_lock(&original_shm_buf.lock);
         capture_instance.shm_buf.shutdown = true;
         _ = c.pthread_mutex_unlock(&original_shm_buf.lock);
 
+        std.log.debug("Left shmbuf lock", .{});
+
         _ = c.sem_post(&original_shm_buf.new_texture_signal);
 
+        std.log.debug("Entering Lock Texture Loop: {}", .{capture_instance.hook_images.len});
         for (0..capture_instance.hook_images.len) |idx| {
+            std.log.debug("Locking Texture: {}", .{idx});
             _ = c.pthread_mutex_lock(&original_shm_buf.texture_locks[idx]);
+            std.log.debug("Locked Texture: {}", .{idx});
         }
 
+        std.log.debug("Entering process lock again", .{});
         _ = c.pthread_mutex_lock(&original_shm_buf.lock);
+        std.log.debug("Process shutdown sequence completed", .{});
     }
 
+    std.log.debug("Destroying hook process alive lock", .{});
     _ = c.pthread_mutex_destroy(&original_shm_buf.hook_process_alive_lock);
+
+    std.log.debug("Destroying remote process alive lock", .{});
     _ = c.pthread_mutex_destroy(&original_shm_buf.remote_process_alive_lock);
+
+    std.log.debug("Destroying shmbuf lock", .{});
     _ = c.pthread_mutex_destroy(&original_shm_buf.lock);
+
+    std.log.debug("Destroying texture signal", .{});
     _ = c.sem_destroy(&original_shm_buf.new_texture_signal);
 
     for (capture_instance.hook_images, 0..) |image, idx| {
+        std.log.debug("Destroying hook image mutex {}", .{idx});
         _ = c.pthread_mutex_destroy(&original_shm_buf.texture_locks[idx]);
         _ = image;
     }
