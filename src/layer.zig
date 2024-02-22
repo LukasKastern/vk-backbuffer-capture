@@ -541,6 +541,8 @@ fn deinitCaptureInstance(reason: ActiveCaptureInstance.ShutdownReason) void {
     var capture_instance = active_capture_instance.?;
     _ = c.pthread_mutex_unlock(&capture_instance.shm_buf.hook_process_alive_lock);
 
+    var notify = capture_instance.notify;
+
     {
         capture_instance.notify.lock.lock();
         defer capture_instance.notify.lock.unlock();
@@ -548,9 +550,8 @@ fn deinitCaptureInstance(reason: ActiveCaptureInstance.ShutdownReason) void {
         capture_instance.shutdown = reason;
     }
 
-    capture_instance.notify.sem.post();
-
-    capture_instance.notify.worker.join();
+    notify.sem.post();
+    notify.worker.join();
 
     active_capture_instance = null;
 }
@@ -827,7 +828,10 @@ const VkDeviceData = struct {
     vk_device: vulkan.VkDevice,
     vk_phy_device: vulkan.VkPhysicalDevice,
     queues: std.ArrayList(QueueData),
+
     swapchains: std.ArrayList(SwapchainData),
+
+    device_lock: std.Thread.Mutex,
 };
 
 fn getVulkanDeviceDataFromVkDevice(device: vulkan.VkDevice) ?*VkDeviceData {
@@ -849,6 +853,7 @@ const VkInstanceData = struct {
     api: InstanceApi,
     physical_devices: std.ArrayList(vulkan.VkPhysicalDevice),
     devices: std.ArrayList(*VkDeviceData),
+    instance_lock: std.Thread.Mutex,
 };
 
 var vk_instances = std.ArrayList(*VkInstanceData).init(allocator);
@@ -864,6 +869,9 @@ pub fn vkQueuePresentKHR(queue: vulkan.VkQueue, present_info: *const vulkan.VkPr
     if (getVulkanDeviceDataFromVkQueue(queue)) |device_data| {
         var present = present_info.*;
         if (!device_data.had_error) {
+            device_data.device_lock.lock();
+            defer device_data.device_lock.unlock();
+
             for (device_data.swapchains.items) |*swapchain| {
                 for (present_info.pSwapchains[0..present_info.swapchainCount]) |in_swapchain| {
                     if (in_swapchain == swapchain.vk_swapchain) {
@@ -950,7 +958,11 @@ fn rememberSwapchain(device_data: *VkDeviceData, swapchain: vulkan.VkSwapchainKH
         };
     };
 
-    try device_data.swapchains.append(swapchain_data);
+    {
+        device_data.device_lock.lock();
+        defer device_data.device_lock.unlock();
+        try device_data.swapchains.append(swapchain_data);
+    }
 
     std.log.info(
         "Create swapchain {}x{} ({})",
@@ -992,6 +1004,9 @@ fn rememberQueue(device_data: *VkDeviceData, family_index: u32, queue: vulkan.Vk
     vk_queue_to_device_lock.lock();
     defer vk_queue_to_device_lock.unlock();
 
+    device_data.device_lock.lock();
+    defer device_data.device_lock.unlock();
+
     std.log.info("Found new queue: {}", .{@intFromPtr(queue)});
 
     vk_queue_to_device_data.put(queue, device_data) catch unreachable;
@@ -1025,6 +1040,9 @@ fn rememberPhysicalDevices(instance_data: *VkInstanceData, phys_devices: []vulka
         };
 
         if (!is_device_known) {
+            instance_data.instance_lock.lock();
+            defer instance_data.instance_lock.unlock();
+
             try instance_data.physical_devices.append(physical_device);
             std.log.info("Instance {} found physical device {}", .{ @intFromPtr(instance_data), @intFromPtr(physical_device) });
         }
@@ -1171,9 +1189,14 @@ fn rememberNewDevice(instance_data: *VkInstanceData, physical_device: vulkan.VkP
         .instance_data = instance_data,
         .queues = std.ArrayList(QueueData).initCapacity(allocator, 8) catch unreachable,
         .swapchains = std.ArrayList(SwapchainData).initCapacity(allocator, 8) catch unreachable,
+        .device_lock = .{},
     };
 
-    try instance_data.devices.append(device_data);
+    {
+        instance_data.instance_lock.lock();
+        defer instance_data.instance_lock.unlock();
+        try instance_data.devices.append(device_data);
+    }
 
     //
     {
@@ -1304,6 +1327,7 @@ fn vkAllocateInstanceData(instance: vulkan.VkInstance, get_proc_addr: vulkan.PFN
         .instance = instance,
         .physical_devices = std.ArrayList(vulkan.VkPhysicalDevice).init(allocator),
         .devices = std.ArrayList(*VkDeviceData).init(allocator),
+        .instance_lock = .{},
     };
 
     try vk_instances.append(instance_data);
