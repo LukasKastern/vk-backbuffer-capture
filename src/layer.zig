@@ -18,7 +18,7 @@ var sequence: u32 = 0;
 fn notifyWorker(capture_instance: *ActiveCaptureInstance) void {
 
     // This will be overwritten by future capture instances. Cache this so we can clean it up later.
-    var original_shm_buf = capture_instance.shm_buf.*;
+    var original_shm_buf = capture_instance.shm_buf;
 
     while (capture_instance.shutdown == null) {
         capture_instance.notify.sem.wait();
