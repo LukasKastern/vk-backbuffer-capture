@@ -49,6 +49,7 @@ pub const DeviceApi = struct {
     vkCreateDescriptorSetLayout: vulkan.PFN_vkCreateDescriptorSetLayout,
     vkCreatePipelineLayout: vulkan.PFN_vkCreatePipelineLayout,
     vkCreateGraphicsPipelines: vulkan.PFN_vkCreateGraphicsPipelines,
+    vkDestroySwapchainKHR: vulkan.PFN_vkDestroySwapchainKHR,
 };
 
 pub fn vkCall(func: anytype, args: anytype) !void {

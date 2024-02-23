@@ -20,7 +20,7 @@ var shm_section_name_buffer: [128]u8 = undefined;
 
 pub const HookSharedData = extern struct {
     pub const MaxTextures = 8;
-    pub const HookVersion = 13;
+    pub const HookVersion = 14;
 
     version: usize,
 
@@ -48,6 +48,8 @@ pub const HookSharedData = extern struct {
     // These are "robust" mutexes used to detect whether the hook and the "remote" process are still alive.
     hook_process_alive_lock: c.pthread_mutex_t,
     remote_process_alive_lock: c.pthread_mutex_t,
+
+    shutdown: bool,
 };
 
 pub fn formatSectionName(process_id: c_int) ![:0]const u8 {

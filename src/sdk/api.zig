@@ -26,6 +26,10 @@ const BackbufferCaptureState = struct {
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator = gpa.allocator();
 
+pub const std_options = struct {
+    pub const log_level = .warn;
+};
+
 const VkBackbufferErrors = error{
     RemoteNotFound,
     OutOfMemory,
@@ -123,7 +127,9 @@ pub fn capture_init(options: *const api.VKBackbufferInitializeOptions, out_state
 }
 
 pub fn capture_deinit(state: api.VKBackbufferCaptureState) void {
-    allocator.destroy(@as(*BackbufferCaptureState, @ptrCast(@alignCast(state))));
+    var backbuffer_capture_state = @as(*BackbufferCaptureState, @ptrCast(@alignCast(state)));
+    _ = c.munmap(backbuffer_capture_state.shared_data, @sizeOf(shared.HookSharedData));
+    allocator.destroy(backbuffer_capture_state);
 }
 
 pub fn capture_try_get_next_frame(state: api.VKBackbufferCaptureState, wait_time_ns: u32, out_frame: *api.VKBackbufferFrame) VkBackbufferErrors!void {
@@ -158,7 +164,12 @@ pub fn capture_try_get_next_frame(state: api.VKBackbufferCaptureState, wait_time
 
     defer _ = c.pthread_mutex_unlock(&backbuffer_capture_state.shared_data.lock);
 
-    _ = c.pthread_mutex_trylock(&backbuffer_capture_state.shared_data.texture_locks[@intCast(backbuffer_capture_state.shared_data.latest_texture)]);
+    if (backbuffer_capture_state.shared_data.shutdown) {
+        std.log.info("Got shutdown signal from remote", .{});
+        return error.RemoteNotFound;
+    }
+
+    _ = c.pthread_mutex_lock(&backbuffer_capture_state.shared_data.texture_locks[@intCast(backbuffer_capture_state.shared_data.latest_texture)]);
 
     out_frame.format = backbuffer_capture_state.shared_data.format;
     out_frame.width = backbuffer_capture_state.shared_data.width;
