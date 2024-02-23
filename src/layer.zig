@@ -20,16 +20,25 @@ fn notifyWorker(capture_instance: *ActiveCaptureInstance) void {
     // This will be overwritten by future capture instances. Cache this so we can clean it up later.
     var original_shm_buf = capture_instance.shm_buf;
 
-    while (capture_instance.shutdown == null) {
-        capture_instance.notify.sem.wait();
+    notify_loop: while (true) {
+        var buffer_to_wait_on = blk: {
+            capture_instance.notify.lock.lock();
 
-        if (capture_instance.shutdown != null) {
-            break;
-        }
+            var has_buffer = capture_instance.notify.pending_buffers.items.len != 0;
 
-        capture_instance.notify.lock.lock();
-        var buffer_to_wait_on = capture_instance.notify.pending_buffers.orderedRemove(0);
-        capture_instance.notify.lock.unlock();
+            if (has_buffer) {
+                capture_instance.notify.lock.unlock();
+                var buffer = capture_instance.notify.pending_buffers.orderedRemove(0);
+                break :blk buffer;
+            } else if (capture_instance.shutdown != null) {
+                capture_instance.notify.lock.unlock();
+                break :notify_loop;
+            } else {
+                capture_instance.notify.lock.unlock();
+                capture_instance.notify.sem.wait();
+                continue :notify_loop;
+            }
+        };
 
         var hook_image = capture_instance.hook_images[buffer_to_wait_on];
 
@@ -97,6 +106,8 @@ fn notifyWorker(capture_instance: *ActiveCaptureInstance) void {
         _ = c.pthread_mutex_lock(&original_shm_buf.lock);
         std.log.debug("Process shutdown sequence completed", .{});
     }
+
+    _ = c.pthread_mutex_unlock(&capture_instance.shm_buf.hook_process_alive_lock);
 
     std.log.debug("Destroying hook process alive lock", .{});
     _ = c.pthread_mutex_destroy(&original_shm_buf.hook_process_alive_lock);
@@ -538,20 +549,17 @@ fn allocateHookImages(device_data: *VkDeviceData, swapchain_data: SwapchainData)
 }
 
 fn deinitCaptureInstance(reason: ActiveCaptureInstance.ShutdownReason) void {
+    //TODO: assert active_capture_instance_lck is held.
     var capture_instance = active_capture_instance.?;
-    _ = c.pthread_mutex_unlock(&capture_instance.shm_buf.hook_process_alive_lock);
-
-    var notify = capture_instance.notify;
 
     {
         capture_instance.notify.lock.lock();
         defer capture_instance.notify.lock.unlock();
-        _ = c.pthread_mutex_unlock(&capture_instance.shm_buf.hook_process_alive_lock);
         capture_instance.shutdown = reason;
     }
 
-    notify.sem.post();
-    notify.worker.join();
+    capture_instance.notify.sem.post();
+    capture_instance.notify.worker.join();
 
     active_capture_instance = null;
 }
@@ -631,7 +639,6 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
         }
 
         var shm_section_name = try formatSectionName(c.getpid());
-        std.log.info("Open shm section: {s}", .{shm_section_name});
 
         _ = c.shm_unlink(shm_section_name);
 
@@ -649,6 +656,10 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
             return error.MapFailed;
         }
 
+        std.log.info("Mapped shared memory: {}", .{@intFromPtr(shm_buf)});
+
+        @memset(@as([*c]u8, @ptrCast(shm_buf))[0..@sizeOf(HookSharedData)], 0);
+
         {
             var att = std.mem.zeroes(c.pthread_mutexattr_t);
             _ = c.pthread_mutexattr_init(&att);
@@ -661,8 +672,6 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
 
         _ = c.pthread_mutex_lock(&shm_buf.lock);
         defer _ = c.pthread_mutex_unlock(&shm_buf.lock);
-
-        @memset(@as([*c]u8, @ptrCast(shm_buf))[0..@sizeOf(HookSharedData)], 0);
 
         var hook_images = try allocateHookImages(device_data, best_swapchain);
         std.debug.assert(hook_images.len <= HookSharedData.MaxTextures);
@@ -907,6 +916,24 @@ pub fn vkQueuePresentKHR(queue: vulkan.VkQueue, present_info: *const vulkan.VkPr
     } else {
         // std.log.err("vkQueuePresentKHR failed! We have no device data.", .{});
         return vulkan.VK_SUCCESS;
+    }
+}
+
+fn vkDestroySwapchainKHR(device: vulkan.VkDevice, swapchain: vulkan.VkSwapchainKHR, pAllocator: [*c]const vulkan.VkAllocationCallbacks) void {
+    if (getVulkanDeviceDataFromVkDevice(device)) |device_data| {
+        if (active_capture_instance) |capture_instance| {
+            active_capture_instance_lck.lock();
+            defer active_capture_instance_lck.unlock();
+
+            std.log.info("Destroy swapchain called {}", .{@intFromPtr(swapchain)});
+            if (capture_instance.swapchain == swapchain) {
+                deinitCaptureInstance(.Other);
+            }
+        }
+
+        device_data.api.vkDestroySwapchainKHR.?(device, swapchain, pAllocator);
+    } else {
+        std.log.err("vkDestroySwapchainKHR failed, we have no device data", .{});
     }
 }
 
@@ -1407,6 +1434,7 @@ pub export fn vkBackbufferCapture_vkGetDeviceProcAddr(device: vulkan.VkDevice, n
         .{ &vkGetDeviceQueue, "vkGetDeviceQueue" },
         .{ &vkCreateSwapchainKHR, "vkCreateSwapchainKHR" },
         .{ &vkQueuePresentKHR, "vkQueuePresentKHR" },
+        .{ &vkDestroySwapchainKHR, "vkDestroySwapchainKHR" },
         .{ &vkBackbufferCapture_vkGetDeviceProcAddr, "vkGetDeviceProcAddr" },
     };
 

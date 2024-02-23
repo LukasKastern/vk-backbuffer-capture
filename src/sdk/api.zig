@@ -26,6 +26,10 @@ const BackbufferCaptureState = struct {
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator = gpa.allocator();
 
+pub const std_options = struct {
+    pub const log_level = .warn;
+};
+
 const VkBackbufferErrors = error{
     RemoteNotFound,
     OutOfMemory,
@@ -166,7 +170,6 @@ pub fn capture_try_get_next_frame(state: api.VKBackbufferCaptureState, wait_time
     }
 
     _ = c.pthread_mutex_lock(&backbuffer_capture_state.shared_data.texture_locks[@intCast(backbuffer_capture_state.shared_data.latest_texture)]);
-    std.log.info("Locked Texture: {}", .{backbuffer_capture_state.shared_data.latest_texture});
 
     out_frame.format = backbuffer_capture_state.shared_data.format;
     out_frame.width = backbuffer_capture_state.shared_data.width;
@@ -191,8 +194,6 @@ pub fn capture_return_frame(state: api.VKBackbufferCaptureState, frame: *const a
 
         return;
     };
-
-    std.log.info("Unlocked Texture: {}", .{frame_idx});
 
     if (c.pthread_mutex_unlock(&backbuffer_capture_state.shared_data.texture_locks[frame_idx]) == -1) {
         std.log.err("Failed to unlock mutex", .{});
