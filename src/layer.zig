@@ -132,6 +132,9 @@ fn notifyWorker(capture_instance: *ActiveCaptureInstance) void {
 }
 
 fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, present_info: *vulkan.VkPresentInfoKHR) !void {
+    active_capture_instance_lck.lock();
+    defer active_capture_instance_lck.unlock();
+
     var capture_instance = active_capture_instance.?;
 
     var queue_data = blk: {
@@ -208,16 +211,14 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
     if (queue_data.vk_command_buffers == null) {
         queue_data.vk_command_buffers = try allocator.alloc(vulkan.VkCommandBuffer, capture_instance.hook_images.len);
 
-        for (queue_data.vk_command_buffers.?) |*cmd_buffer| {
-            var allocate_info = std.mem.zeroInit(vulkan.VkCommandBufferAllocateInfo, .{
-                .sType = vulkan.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-                .commandBufferCount = 1,
-                .commandPool = queue_data.vk_command_pool.?,
-                .level = vulkan.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            });
+        var allocate_info = std.mem.zeroInit(vulkan.VkCommandBufferAllocateInfo, .{
+            .sType = vulkan.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandBufferCount = @as(u32, @intCast(queue_data.vk_command_buffers.?.len)),
+            .commandPool = queue_data.vk_command_pool.?,
+            .level = vulkan.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        });
 
-            try vulkan.vkCall(device_data.api.vkAllocateCommandBuffers.?, .{ device_data.vk_device, &allocate_info, cmd_buffer });
-        }
+        try vulkan.vkCall(device_data.api.vkAllocateCommandBuffers.?, .{ device_data.vk_device, &allocate_info, queue_data.vk_command_buffers.?.ptr });
     }
 
     if (queue_data.pipeline == null) {
@@ -278,10 +279,10 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
             .pImageMemoryBarriers = &image_barrier,
         });
 
-        try vulkan.vkCall(device_data.api.vkCmdPipelineBarrier2.?, .{ cmd_buffer, &dep_info });
+        try vulkan.vkCall(device_data.api.vkCmdPipelineBarrier2KHR.?, .{ cmd_buffer, &dep_info });
     }
 
-    try vulkan.vkCall(device_data.api.vkCmdBeginRendering.?, .{ cmd_buffer, &rendering_info });
+    try vulkan.vkCall(device_data.api.vkCmdBeginRenderingKHR.?, .{ cmd_buffer, &rendering_info });
     {
         var viewport = std.mem.zeroInit(vulkan.VkViewport, .{
             .maxDepth = @as(f32, 1),
@@ -330,7 +331,7 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
         try vulkan.vkCall(device_data.api.vkCmdDraw.?, .{ cmd_buffer, 3, 1, 0, 0 });
     }
 
-    try vulkan.vkCall(device_data.api.vkCmdEndRendering.?, .{cmd_buffer});
+    try vulkan.vkCall(device_data.api.vkCmdEndRenderingKHR.?, .{cmd_buffer});
 
     {
         const image_barrier = std.mem.zeroInit(vulkan.VkImageMemoryBarrier2, .{
@@ -355,7 +356,7 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
             .pImageMemoryBarriers = &image_barrier,
         });
 
-        try vulkan.vkCall(device_data.api.vkCmdPipelineBarrier2.?, .{ cmd_buffer, &dep_info });
+        try vulkan.vkCall(device_data.api.vkCmdPipelineBarrier2KHR.?, .{ cmd_buffer, &dep_info });
     }
 
     {
@@ -380,7 +381,7 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.VkQueue, presen
             .pImageMemoryBarriers = &image_barrier,
         });
 
-        try vulkan.vkCall(device_data.api.vkCmdPipelineBarrier2.?, .{ cmd_buffer, &dep_info });
+        try vulkan.vkCall(device_data.api.vkCmdPipelineBarrier2KHR.?, .{ cmd_buffer, &dep_info });
     }
 
     try vulkan.vkCall(device_data.api.vkEndCommandBuffer.?, .{cmd_buffer});
@@ -504,7 +505,7 @@ fn allocateHookImages(device_data: *VkDeviceData, swapchain_data: SwapchainData)
                 .memoryOffset = 0,
             });
 
-            try vulkan.vkCall(device_data.api.vkBindImageMemory2.?, .{ device_data.vk_device, 1, &bind_info });
+            try vulkan.vkCall(device_data.api.vkBindImageMemory2KHR.?, .{ device_data.vk_device, 1, &bind_info });
 
             var get_memory_fd_info = std.mem.zeroInit(vulkan.VkMemoryGetFdInfoKHR, .{
                 .sType = vulkan.VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
@@ -1158,7 +1159,11 @@ fn injectDeviceFeatures(create_info: *vulkan.VkDeviceCreateInfo) void {
 
     var enabled_features = if (create_info.pEnabledFeatures != null) create_info.pEnabledFeatures.* else std.mem.zeroes(vulkan.VkPhysicalDeviceFeatures);
     enabled_features.depthClamp = vulkan.VK_TRUE;
-    create_info.pEnabledFeatures = &enabled_features;
+
+    var features_ptr = gpa.allocator().create(@TypeOf(enabled_features)) catch unreachable;
+    create_info.pEnabledFeatures = features_ptr;
+
+    features_ptr.* = enabled_features;
 
     // This does leak ;)
     var synch2_feature_khr = gpa.allocator().create(vulkan.VkPhysicalDeviceSynchronization2FeaturesKHR) catch unreachable;
