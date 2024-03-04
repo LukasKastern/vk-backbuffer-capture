@@ -37,3 +37,8 @@ The current way of transfering the textures requires ptrace permission.
 sudo setcap 'cap_sys_ptrace=ep' /home/yourname/Projects/backbuffer-capture/zig-out/bin/window-example
 ```
 
+To enable debug messages set the env var BACKBUFFER_CAPTURE_DEBUG to the desired output level.
+
+```console
+BACKBUFFER_CAPTURE_DEBUG=info
+````

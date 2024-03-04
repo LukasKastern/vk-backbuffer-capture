@@ -1367,6 +1367,14 @@ fn vkAllocateInstanceData(instance: vulkan.VkInstance, get_proc_addr: vulkan.PFN
 }
 
 pub fn vkCreateInstance(pCreateInfo: *const vulkan.VkInstanceCreateInfo, pAllocator: *const vulkan.VkAllocationCallbacks, pInstance: *vulkan.VkInstance) callconv(.C) vulkan.VkResult {
+    configureLogLevel() catch |e| {
+        switch (e) {
+            else => {
+                std.log.err("Error occured while trying to configure log level: {s}", .{@errorName(e)});
+            },
+        }
+    };
+
     var layer_create_info: ?*vulkan.VkLayerInstanceCreateInfo = @constCast(@alignCast(@ptrCast(pCreateInfo.pNext)));
     while (layer_create_info != null and (layer_create_info.?.sType != vulkan.VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO or layer_create_info.?.function != vulkan.VK_LAYER_LINK_INFO)) {
         layer_create_info = @constCast(@alignCast(@ptrCast(layer_create_info.?.pNext)));
@@ -1457,6 +1465,43 @@ pub export fn vkBackbufferCapture_vkGetDeviceProcAddr(device: vulkan.VkDevice, n
     }
 
     return null;
+}
+
+pub const std_options = struct {
+    pub const log_level = .debug;
+
+    pub const logFn = logOverride;
+};
+
+var log_level: std.log.Level = .warn;
+
+fn configureLogLevel() !void {
+    var env_map = try std.process.getEnvMap(gpa.allocator());
+    defer env_map.deinit();
+    std.log.info("EnvMap: {any}", .{env_map});
+    if (env_map.get("BACKBUFFER_CAPTURE_DEBUG")) |level_str| {
+        log_level = blk: {
+            for (@intFromEnum(std.log.Level.err)..@intFromEnum(std.log.Level.debug)) |level_num| {
+                const enum_val: std.log.Level = @enumFromInt(level_num);
+                if (std.mem.eql(u8, @tagName(enum_val), level_str)) {
+                    break :blk @as(std.log.Level, @enumFromInt(level_num));
+                }
+            }
+
+            break :blk .debug;
+        };
+    }
+}
+
+pub fn logOverride(
+    comptime message_level: std.log.Level,
+    comptime scope: @Type(.EnumLiteral),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    if (@intFromEnum(message_level) <= @intFromEnum(log_level)) {
+        std.log.defaultLog(message_level, scope, format, args);
+    }
 }
 
 pub export fn vkBackbufferCapture_vkNegotiateLoaderLayerInterfaceVersion(negoatiate_interface: *vulkan.VkNegotiateLayerInterface) callconv(.C) vulkan.VkResult {
