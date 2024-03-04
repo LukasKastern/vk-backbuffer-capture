@@ -128,6 +128,9 @@ pub fn capture_init(options: *const api.VKBackbufferInitializeOptions, out_state
 
 pub fn capture_deinit(state: api.VKBackbufferCaptureState) void {
     var backbuffer_capture_state = @as(*BackbufferCaptureState, @ptrCast(@alignCast(state)));
+
+    _ = c.pthread_mutex_unlock(&backbuffer_capture_state.shared_data.remote_process_alive_lock);
+
     _ = c.munmap(backbuffer_capture_state.shared_data, @sizeOf(shared.HookSharedData));
     allocator.destroy(backbuffer_capture_state);
 }
