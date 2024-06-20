@@ -42,13 +42,22 @@ fn notifyWorker(capture_instance: *ActiveCaptureInstance) void {
 
         var hook_image = capture_instance.hook_images[buffer_to_wait_on];
 
-        vulkan.vkCall(capture_instance.device.api.vkWaitForFences.?, .{
-            capture_instance.device.vk_device,
-            1,
-            &hook_image.vk_fence,
-            vulkan.VK_TRUE,
-            vulkan.UINT64_MAX,
-        }) catch break;
+        // Try to wait for the fence. If we did shutdown break the loop.
+        while (capture_instance.shutdown == null) {
+            vulkan.vkCall(capture_instance.device.api.vkWaitForFences.?, .{
+                capture_instance.device.vk_device,
+                1,
+                &hook_image.vk_fence,
+                vulkan.VK_TRUE,
+                std.time.ns_per_ms * 10,
+            }) catch |e| switch (e) {
+                else => {},
+            };
+        }
+
+        if (capture_instance.shutdown != null) {
+            break :notify_loop;
+        }
 
         vulkan.vkCall(capture_instance.device.api.vkResetFences.?, .{
             capture_instance.device.vk_device,
