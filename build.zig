@@ -65,7 +65,7 @@ pub fn build(b: *std.Build) void {
     sdk.addModule("shared", shared_module);
 
     sdk.addIncludePath(.{ .path = "src/sdk/" });
-    sdk.installHeader("src/sdk/backbuffer-capture/api.h", "backbuffer-capture/api.h");
+    sdk.installHeadersDirectory("src/sdk/backbuffer-capture/", "backbuffer-capture/");
 
     const c_api_example = b.addExecutable(.{
         .name = "c_api-example",
