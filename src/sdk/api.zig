@@ -1,5 +1,5 @@
 const std = @import("std");
-const api = @cImport(@cInclude("api.h"));
+const api = @cImport(@cInclude("backbuffer-capture/api.h"));
 pub usingnamespace api;
 
 const shared = @import("shared");

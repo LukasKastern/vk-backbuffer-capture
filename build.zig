@@ -65,7 +65,7 @@ pub fn build(b: *std.Build) void {
     sdk.addModule("shared", shared_module);
 
     sdk.addIncludePath(.{ .path = "src/sdk/" });
-    var install_sdk_api = b.addInstallHeaderFile("src/sdk/api.h", "backbuffer-capture/api.h");
+    sdk.installHeader("src/sdk/backbuffer-capture/api.h", "backbuffer-capture/api.h");
 
     const c_api_example = b.addExecutable(.{
         .name = "c_api-example",
@@ -75,7 +75,7 @@ pub fn build(b: *std.Build) void {
     });
 
     c_api_example.linkLibrary(sdk);
-    c_api_example.step.dependOn(&install_sdk_api.step);
+    // c_api_example.step.dependOn(&install_sdk_api.step);
     c_api_example.addIncludePath(.{ .path = "zig-out/include" });
 
     const window = b.addExecutable(.{
