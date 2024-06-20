@@ -18,6 +18,24 @@ pub fn build(b: *std.Build) void {
     const compile_vert = b.addSystemCommand(&.{ "glslc", "src/shaders/vs_swapchain_fullscreen.vert", "-o", "src/shaders/vs_swapchain_fullscreen.spv" });
     const compile_frag = b.addSystemCommand(&.{ "glslc", "src/shaders/fs_swapchain_fullscreen.frag", "-o", "src/shaders/fs_swapchain_fullscreen.spv" });
 
+    const vulkan_dep = b.dependency("vulkan_headers", .{ .target = target, .optimize = optimize });
+
+    const x11_dep = b.dependency("x11", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const gl_dep = b.dependency("gl", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const dependencies = &[_]*std.Build.Step.Compile{
+        vulkan_dep.artifact("vulkan-headers"),
+        x11_dep.artifact("x11-headers"),
+        gl_dep.artifact("opengl-headers"),
+    };
+
     const hook = b.addSharedLibrary(.{
         .name = "backbuffer-capture",
         .root_source_file = .{ .path = "src/layer.zig" },
@@ -36,6 +54,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = .{ .path = "src/sdk/api.zig" },
     });
+
     sdk.linkLibC();
     sdk.bundle_compiler_rt = true;
 
@@ -66,10 +85,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    window.linkSystemLibraryName("X11");
-    window.linkSystemLibraryName("GLX");
-    window.linkSystemLibraryName("GL");
-
     window.linkLibrary(sdk);
 
     var sdk_module = b.addModule(
@@ -81,8 +96,16 @@ pub fn build(b: *std.Build) void {
             },
         },
     );
+
     window.addModule("backbuffer-capture", sdk_module);
     window.addIncludePath(.{ .path = "src/sdk" });
+
+    for (dependencies) |dep| {
+        hook.linkLibrary(dep);
+        sdk.linkLibrary(dep);
+        c_api_example.linkLibrary(dep);
+        window.linkLibrary(dep);
+    }
 
     b.installArtifact(window);
     b.installArtifact(hook);

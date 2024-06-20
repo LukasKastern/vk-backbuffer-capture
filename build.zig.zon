@@ -1,0 +1,28 @@
+.{
+    .name = "vk-backbuffer-capture",
+    .version = "0.1.0",
+    .paths = .{
+        "src",
+        "build.zig",
+        "build.zig.zon",
+        "LICENSE",
+        "LICENSE-APACHE",
+        "LICENSE-MIT",
+        "README.md",
+    },
+    .dependencies = .{        
+       	.vulkan_headers = .{
+            .url = "https://github.com/LukasKastern/vulkan-headers/archive/0212dd8b71531d0cec8378ce8fb1721a0df7420a.tar.gz",
+			.hash = "1220a8b642edf8ef522e468cfe9a1803507472461b1041be717294ca484d1361afb0",
+        },
+        .x11 = .{
+            .url = "https://github.com/LukasKastern/x11-headers/archive/991ad9bf599df04aaa5332e536712a8476838ee3.tar.gz",
+            .hash = "12205bd95b9cc9cb08dd6b55f5842d8fae67a12eed01092c54f021060931815f711e",
+        },
+        .gl = .{
+            .url = "https://github.com/LukasKastern/opengl-headers/archive/677b357722043945260f5bd8a3048c4d535bff72.tar.gz",
+            .hash = "122054abfa9d442e13220cde1d01acb62209ceb2912e6ff2c66b4fd7c35956a65506",
+        },
+    }
+}
+
