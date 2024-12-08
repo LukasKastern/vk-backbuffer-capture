@@ -1,7 +1,21 @@
-# What is vk-backbuffer-capture?
+# What is libbackbuffer
 
-vk-backbuffer-capture is a vulkan layer that provides applications with low-latency access to swapchain images.
+libbackbuffer (previously vk-backbuffer-capture) is a backbuffer capturing API. 
 
+The goal of libbackbuffer is to provide a unified API for acquiring the video output of applications.
+
+## Supported APIs
+
+| API  | Windows | Linux |
+| -------- | ------- | ------ |
+| OpenGL    | 🚧 |  🚧 |
+| DX9  | 🚧  |  ❌|
+| DX10 | 🚧 |  ❌|
+| DX11  | 🚧  |  ❌|
+| DX12 | 🚧 |  ❌|
+| Vulkan | 🚧 |  ✔ | 
+ 
+ 
 ## Prequisites
 [Zig (0.11)](https://ziglang.org/download/).
 
@@ -42,3 +56,4 @@ To enable debug messages set the env var BACKBUFFER_CAPTURE_DEBUG to the desired
 ```console
 BACKBUFFER_CAPTURE_DEBUG=info
 ````
+
