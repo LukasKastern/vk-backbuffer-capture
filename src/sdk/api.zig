@@ -1,6 +1,5 @@
 const std = @import("std");
 const api = @cImport(@cInclude("backbuffer-capture/api.h"));
-pub usingnamespace api;
 
 const shared = @import("shared");
 const c = shared.c;
@@ -40,10 +39,10 @@ const VkBackbufferErrors = error{
 };
 
 pub fn capture_init(options: *const api.VKBackbufferInitializeOptions, out_state: *api.VKBackbufferCaptureState) VkBackbufferErrors!void {
-    var shm_section_name = try shared.formatSectionName(options.target_app_id);
+    const shm_section_name = try shared.formatSectionName(options.target_app_id);
 
     std.log.info("Open shm section: {s}", .{shm_section_name});
-    var shm_handle = c.shm_open(shm_section_name, c.O_RDWR, 0);
+    const shm_handle = c.shm_open(shm_section_name, c.O_RDWR, 0);
 
     if (shm_handle == -1) {
         return VkBackbufferErrors.RemoteNotFound;
@@ -51,8 +50,8 @@ pub fn capture_init(options: *const api.VKBackbufferInitializeOptions, out_state
 
     defer _ = c.close(shm_handle);
 
-    var shm_buf: *shared.HookSharedData = @alignCast(
-        @ptrCast(c.mmap(@as(*anyopaque, @ptrFromInt(@as(usize, @intCast(shm_handle)))), @sizeOf(shared.HookSharedData), c.PROT_READ | c.PROT_WRITE, c.MAP_SHARED, shm_handle, 0)),
+    var shm_buf: *shared.HookSharedData = @ptrCast(
+        @alignCast(c.mmap(@as(*anyopaque, @ptrFromInt(@as(usize, @intCast(shm_handle)))), @sizeOf(shared.HookSharedData), c.PROT_READ | c.PROT_WRITE, c.MAP_SHARED, shm_handle, 0)),
     );
 
     if (@intFromPtr(shm_buf) == @intFromPtr(c.MAP_FAILED)) {
@@ -93,7 +92,7 @@ pub fn capture_init(options: *const api.VKBackbufferInitializeOptions, out_state
     defer _ = c.pthread_mutex_unlock(&shm_buf.lock);
 
     {
-        var res = c.pthread_mutex_trylock(&shm_buf.hook_process_alive_lock);
+        const res = c.pthread_mutex_trylock(&shm_buf.hook_process_alive_lock);
         if (res == 0 or res == @intFromEnum(std.os.linux.E.OWNERDEAD)) {
             // Process is not alive anymore..
 
@@ -106,13 +105,13 @@ pub fn capture_init(options: *const api.VKBackbufferInitializeOptions, out_state
         }
     }
 
-    var pid = c.syscall(c.SYS_pidfd_open, options.target_app_id, @as(c_int, 0));
+    const pid = c.syscall(c.SYS_pidfd_open, options.target_app_id, @as(c_int, 0));
 
-    var handles = try allocator.alloc(c_int, shm_buf.num_textures);
+    const handles = try allocator.alloc(c_int, shm_buf.num_textures);
     errdefer allocator.free(handles);
 
     for (shm_buf.texture_handles[0..shm_buf.num_textures], handles) |texture_handle, *handle| {
-        var out_handle = c.syscall(c.SYS_pidfd_getfd, pid, texture_handle, @as(c_int, 0));
+        const out_handle = c.syscall(c.SYS_pidfd_getfd, pid, texture_handle, @as(c_int, 0));
         handle.* = @intCast(out_handle);
     }
 
@@ -138,7 +137,7 @@ pub fn capture_deinit(state: api.VKBackbufferCaptureState) void {
 pub fn capture_try_get_next_frame(state: api.VKBackbufferCaptureState, wait_time_ns: u32, out_frame: *api.VKBackbufferFrame) VkBackbufferErrors!void {
     var backbuffer_capture_state = @as(*BackbufferCaptureState, @ptrCast(@alignCast(state)));
 
-    var lck_res = c.pthread_mutex_trylock(&backbuffer_capture_state.shared_data.hook_process_alive_lock);
+    const lck_res = c.pthread_mutex_trylock(&backbuffer_capture_state.shared_data.hook_process_alive_lock);
 
     if (lck_res == 0 or lck_res == @intFromEnum(std.os.linux.E.OWNERDEAD)) {
         if (lck_res == @intFromEnum(std.os.linux.E.OWNERDEAD)) {
@@ -188,7 +187,7 @@ pub fn capture_return_frame(state: api.VKBackbufferCaptureState, frame: *const a
     _ = c.pthread_mutex_lock(&backbuffer_capture_state.shared_data.lock);
     defer _ = c.pthread_mutex_unlock(&backbuffer_capture_state.shared_data.lock);
 
-    var frame_idx = blk: {
+    const frame_idx = blk: {
         for (backbuffer_capture_state.texture_handles, 0..) |handle, idx| {
             if (handle == frame.frame_fd_opaque) {
                 break :blk idx;
@@ -205,7 +204,7 @@ pub fn capture_return_frame(state: api.VKBackbufferCaptureState, frame: *const a
 }
 
 fn dlsymLoadOrError(dl: ?*anyopaque, sym: [:0]const u8) VkBackbufferErrors!*anyopaque {
-    var symbol = c.dlsym(dl, sym);
+    const symbol = c.dlsym(dl, sym);
     if (symbol == null) {
         return error.ApiError;
     }
@@ -218,17 +217,17 @@ pub fn capture_import_opengl_texture(state: api.VKBackbufferCaptureState, frame:
 
     if (backbuffer_capture_state.opengl_import_api == null) {
         backbuffer_capture_state.opengl_import_api = blk: {
-            var glx = c.dlopen("libGLX.so", c.RTLD_NOW);
+            const glx = c.dlopen("libGLX.so", c.RTLD_NOW);
             if (glx == null) {
                 return error.ApiError;
             }
 
-            var gl = c.dlopen("libGL.so", c.RTLD_NOW);
+            const gl = c.dlopen("libGL.so", c.RTLD_NOW);
             if (gl == null) {
                 return error.ApiError;
             }
 
-            var glx_load: *const fn (name: [*c]const u8) callconv(.C) ?*anyopaque =
+            const glx_load: *const fn (name: [*c]const u8) callconv(.C) ?*anyopaque =
                 @ptrCast(try dlsymLoadOrError(gl, "glXGetProcAddress"));
 
             break :blk .{

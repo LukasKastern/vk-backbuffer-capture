@@ -15,100 +15,99 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
-    const compile_vert = b.addSystemCommand(&.{ "glslc", "src/shaders/vs_swapchain_fullscreen.vert", "-o", "src/shaders/vs_swapchain_fullscreen.spv" });
-    const compile_frag = b.addSystemCommand(&.{ "glslc", "src/shaders/fs_swapchain_fullscreen.frag", "-o", "src/shaders/fs_swapchain_fullscreen.spv" });
-
-    const vulkan_dep = b.dependency("vulkan_headers", .{ .target = target, .optimize = optimize });
-
-    const x11_dep = b.dependency("x11", .{
-        .target = target,
-        .optimize = optimize,
+    _ = b.run(&.{
+        "glslc",
+        "src/shaders/vs_swapchain_fullscreen.vert",
+        "-o",
+        "src/shaders/vs_swapchain_fullscreen.spv",
+    });
+    _ = b.run(&.{
+        "glslc",
+        "src/shaders/fs_swapchain_fullscreen.frag",
+        "-o",
+        "src/shaders/fs_swapchain_fullscreen.spv",
     });
 
-    const gl_dep = b.dependency("gl", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const dependencies = &[_]*std.Build.Step.Compile{
-        vulkan_dep.artifact("vulkan-headers"),
-        x11_dep.artifact("x11-headers"),
-        gl_dep.artifact("opengl-headers"),
-    };
-
-    const hook = b.addSharedLibrary(.{
+    const hook = b.addLibrary(.{
+        .linkage = .dynamic,
         .name = "backbuffer-capture",
-        .root_source_file = .{ .path = "src/layer.zig" },
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .root_source_file = b.path("src/layer.zig"),
+            .link_libc = true,
+        }),
     });
 
-    hook.step.dependOn(&compile_frag.step);
-    hook.step.dependOn(&compile_vert.step);
+    // const sdk = b.addLibrary(.{
+    //     .name = "backbuffer-api",
+    //     .root_module = b.createModule(.{
+    //         .target = target,
+    //         .optimize = optimize,
+    //         .root_source_file = b.path("src/sdk/api.zig"),
+    //         .link_libc = true,
+    //     }),
+    // });
 
-    hook.linkLibC();
+    // sdk.bundle_compiler_rt = true;
 
-    const sdk = b.addStaticLibrary(.{
-        .name = "backbuffer-api",
-        .target = target,
-        .optimize = optimize,
-        .root_source_file = .{ .path = "src/sdk/api.zig" },
-    });
+    // const shared_module = b.addModule("shared", .{
+    // .root_source_file = b.path("src/shared.zig"),
+    // });
 
-    sdk.linkLibC();
-    sdk.bundle_compiler_rt = true;
+    // sdk.root_module.addImport("shared", shared_module);
 
-    var shared_module = b.addModule("shared", .{
-        .source_file = .{ .path = "src/shared.zig" },
-    });
+    // sdk.root_module.addIncludePath(b.path("src/sdk/"));
+    // sdk.installHeadersDirectory(b.path("src/sdk/backbuffer-capture/"), "backbuffer-capture/", .{});
 
-    sdk.addModule("shared", shared_module);
+    // const c_api_example = b.addExecutable(.{
+    //     .name = "c_api-example",
+    //     .root_module = b.createModule(.{
+    //         .root_source_file = b.path("src/examples/c_api/main.c"),
+    //         .target = target,
+    //         .optimize = optimize,
+    //     }),
+    // });
 
-    sdk.addIncludePath(.{ .path = "src/sdk/" });
-    sdk.installHeadersDirectory("src/sdk/backbuffer-capture/", "backbuffer-capture/");
+    // c_api_example.root_module.linkLibrary(sdk);
+    // c_api_example.root_module.addIncludePath(b.path("zig-out/include"));
 
-    const c_api_example = b.addExecutable(.{
-        .name = "c_api-example",
-        .root_source_file = .{ .path = "src/examples/c_api/main.c" },
-        .target = target,
-        .optimize = optimize,
-    });
+    // const window = b.addExecutable(.{
+    //     .name = "window-example",
+    //     .root_module = b.createModule(.{
+    //         .root_source_file = b.path("src/examples/window/main.zig"),
+    //         .target = target,
+    //         .optimize = optimize,
+    //     }),
+    // });
 
-    c_api_example.linkLibrary(sdk);
-    // c_api_example.step.dependOn(&install_sdk_api.step);
-    c_api_example.addIncludePath(.{ .path = "zig-out/include" });
+    // window.root_module.linkLibrary(sdk);
 
-    const window = b.addExecutable(.{
-        .name = "window-example",
-        .root_source_file = .{ .path = "src/examples/window/main.zig" },
-        .target = target,
-        .optimize = optimize,
-    });
+    // const sdk_module = b.addModule("backbuffer-capture", .{
+    //     .root_source_file = b.path("src/sdk/api.zig"),
+    // });
+    // sdk_module.addImport("shared", shared_module);
 
-    window.linkLibrary(sdk);
+    // window.root_module.addImport("backbuffer-capture", sdk_module);
+    // window.root_module.addIncludePath(b.path("src/sdk"));
 
-    var sdk_module = b.addModule(
-        "backbuffer-capture",
-        .{
-            .source_file = .{ .path = "src/sdk/api.zig" },
-            .dependencies = &.{
-                .{ .name = "shared", .module = shared_module },
-            },
-        },
-    );
+    // Import opengl-headers
+    // const dep_opengl_header = b.dependency("gl", .{});
+    // @import("gl").addIncludePaths(dep_opengl_header.builder, window.root_module);
 
-    window.addModule("backbuffer-capture", sdk_module);
-    window.addIncludePath(.{ .path = "src/sdk" });
+    // Import opengl-headers
+    const dep_vk_header = b.dependency("vulkan_headers", .{});
+    @import("vulkan_headers").addIncludePaths(dep_vk_header.builder, hook.root_module);
 
-    for (dependencies) |dep| {
-        hook.linkLibrary(dep);
-        sdk.linkLibrary(dep);
-        c_api_example.linkLibrary(dep);
-        window.linkLibrary(dep);
-    }
+    // for (dependencies) |dep| {
+    //     hook.root_module.linkLibrary(dep);
+    //     sdk.root_module.linkLibrary(dep);
+    //     c_api_example.root_module.linkLibrary(dep);
+    //     window.root_module.linkLibrary(dep);
+    // }
 
-    b.installArtifact(window);
+    // b.installArtifact(window);
     b.installArtifact(hook);
-    b.installArtifact(sdk);
-    b.installArtifact(c_api_example);
+    // b.installArtifact(sdk);
+    // b.installArtifact(c_api_example);
 }
