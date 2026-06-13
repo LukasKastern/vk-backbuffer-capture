@@ -3,7 +3,7 @@
 vk-backbuffer-capture is a vulkan layer that provides applications with low-latency access to swapchain images.
 
 ## Prequisites
-[Zig (0.11)](https://ziglang.org/download/).
+[Zig (0.16.0)](https://ziglang.org/download/).
 
 ## Build the project
 

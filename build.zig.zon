@@ -12,8 +12,17 @@
         "README.md",
     },
     .dependencies = .{
-        .vulkan_headers = .{ .path = "../vulkan-headers" },
-        .x11 = .{ .path = "../x11-headers" },
-        .gl = .{ .path = "../opengl-headers" },
+        .x11 = .{
+            .url = "git+https://github.com/lukaskastern/x11-headers#1bcbb1104396eaad9e623f0aedaedd9a31df38ab",
+            .hash = "x11_headers-0.1.0-DRLr-HPMQQCLdCfXiOR-nfrlwlYrgCofM32hP-B38F8w",
+        },
+        .gl = .{
+            .url = "git+https://github.com/lukaskastern/opengl-headers#bf5bd377fea69a34a182a97e97216b321410e74e",
+            .hash = "opengl_headers-0.1.0-u1X9h6uiIwCeeV49VFGIOSAVXiDhB6EleP1eX1ROTbmw",
+        },
+        .vulkan_headers = .{
+            .url = "git+https://github.com/lukaskastern/vulkan-headers#329e6ebbf02d72f244da596daea65c73993d6dc3",
+            .hash = "vulkan_headers-0.1.0-eUOm44TDzgAMh19T_sIiVD2aVdcq4YgCcJ3Ed_vMbUbl",
+        },
     },
 }
