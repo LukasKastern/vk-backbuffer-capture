@@ -39,6 +39,7 @@ fn notifyWorker(capture_instance: *ActiveCaptureInstance) void {
             }
         };
 
+        // std.log.err("waiting for buffer {}", .{buffer_to_wait_on});
         var hook_image = capture_instance.hook_images[buffer_to_wait_on];
 
         // Try to wait for the fence. If we did shutdown break the loop.
@@ -50,9 +51,15 @@ fn notifyWorker(capture_instance: *ActiveCaptureInstance) void {
                 vulkan.C.VK_TRUE,
                 std.time.ns_per_ms * 10,
             }) catch |e| switch (e) {
-                else => {},
+                else => {
+                    std.log.err("wait for fence error occured {}", .{e});
+                },
             };
+
+            // Fence returned
+            break;
         }
+        // std.log.err("buffer returned", .{});
 
         if (capture_instance.shutdown != null) {
             break :notify_loop;
@@ -139,6 +146,78 @@ fn notifyWorker(capture_instance: *ActiveCaptureInstance) void {
     allocator.destroy(capture_instance);
 }
 
+fn initCopyData(
+    capture_instance: *ActiveCaptureInstance,
+    device_data: *VkDeviceData,
+    queue_data: *QueueData,
+    swapchain_data: *SwapchainData,
+) !QueueData.CopyData {
+    var create_info = std.mem.zeroInit(vulkan.C.VkCommandPoolCreateInfo, .{
+        .sType = vulkan.C.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .queueFamilyIndex = queue_data.family_index,
+        .flags = vulkan.C.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+    });
+
+    var command_pool: vulkan.C.VkCommandPool = undefined;
+    try vulkan.vkCall(device_data.api.vkCreateCommandPool.?, .{
+        device_data.vk_device,
+        &create_info,
+        null,
+        @as([*c]vulkan.C.VkCommandPool, @ptrCast(&command_pool)),
+    });
+    errdefer device_data.api.vkDestroyCommandPool.?(device_data.vk_device, command_pool, null);
+
+    const cmd_buffer_used = try allocator.alloc(bool, capture_instance.hook_images.len);
+    errdefer allocator.free(cmd_buffer_used);
+
+    @memset(cmd_buffer_used, false);
+
+    // Alloc command buffers
+    const vk_command_buffers = try allocator.alloc(vulkan.C.VkCommandBuffer, capture_instance.hook_images.len);
+    errdefer allocator.free(vk_command_buffers);
+
+    var allocate_info = std.mem.zeroInit(vulkan.C.VkCommandBufferAllocateInfo, .{
+        .sType = vulkan.C.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandBufferCount = @as(u32, @intCast(vk_command_buffers.len)),
+        .commandPool = command_pool,
+        .level = vulkan.C.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+    });
+
+    try vulkan.vkCall(device_data.api.vkAllocateCommandBuffers.?, .{ device_data.vk_device, &allocate_info, vk_command_buffers.ptr });
+    errdefer device_data.api.vkFreeCommandBuffers.?(device_data.vk_device, command_pool, @intCast(vk_command_buffers.len), vk_command_buffers.ptr);
+
+    // Create sampler
+    const sampler_info = std.mem.zeroInit(vulkan.C.VkSamplerCreateInfo, .{
+        .sType = vulkan.C.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = vulkan.C.VK_FILTER_LINEAR,
+        .minFilter = vulkan.C.VK_FILTER_LINEAR,
+        .mipmapMode = vulkan.C.VK_SAMPLER_MIPMAP_MODE_NEAREST,
+        .addressModeU = vulkan.C.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeV = vulkan.C.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeW = vulkan.C.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .maxLod = 1.0,
+    });
+    var sampler: vulkan.C.VkSampler = undefined;
+    try vulkan.vkCall(device_data.api.vkCreateSampler.?, .{
+        device_data.vk_device,
+        &sampler_info,
+        null,
+        &sampler,
+    });
+    errdefer device_data.api.vkDestroySampler.?(device_data.vk_device, sampler, null);
+
+    // Create pipeline
+    const created_pipeline = try pipeline.createSwapchainPipeline(device_data.api, device_data.vk_device, swapchain_data.format);
+
+    return .{
+        .vk_command_pool = command_pool,
+        .vk_command_buffers = vk_command_buffers,
+        .cmd_buffer_used = cmd_buffer_used,
+        .pipeline = created_pipeline,
+        .sampler = sampler,
+    };
+}
+
 fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.C.VkQueue, present_info: *vulkan.C.VkPresentInfoKHR) !void {
     active_capture_instance_lck.lockUncancelable(io);
     defer active_capture_instance_lck.unlock(io);
@@ -191,23 +270,8 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.C.VkQueue, pres
     const lock = image_and_lock.lock;
     _ = lock; // autofix
 
-    if (queue_data.vk_command_pool == null) {
-        var create_info = std.mem.zeroInit(vulkan.C.VkCommandPoolCreateInfo, .{
-            .sType = vulkan.C.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-            .queueFamilyIndex = queue_data.family_index,
-            .flags = vulkan.C.VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | vulkan.C.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-        });
-
-        try vulkan.vkCall(device_data.api.vkCreateCommandPool.?, .{
-            device_data.vk_device,
-            &create_info,
-            null,
-            @as([*c]vulkan.C.VkCommandPool, @ptrCast(&queue_data.vk_command_pool)),
-        });
-    }
-
     const swapchain_data = blk: {
-        for (capture_instance.device.swapchains.items) |swapchain| {
+        for (capture_instance.device.swapchains.items) |*swapchain| {
             if (swapchain.vk_swapchain == capture_instance.swapchain) {
                 break :blk swapchain;
             }
@@ -216,24 +280,14 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.C.VkQueue, pres
         return error.SwapchainDataNotFound;
     };
 
-    if (queue_data.vk_command_buffers == null) {
-        queue_data.vk_command_buffers = try allocator.alloc(vulkan.C.VkCommandBuffer, capture_instance.hook_images.len);
+    // Init copy data
+    const copy_data = queue_data.copy_data orelse blk: {
+        const data = try initCopyData(capture_instance, device_data, queue_data, swapchain_data);
+        queue_data.copy_data = data;
+        break :blk data;
+    };
 
-        var allocate_info = std.mem.zeroInit(vulkan.C.VkCommandBufferAllocateInfo, .{
-            .sType = vulkan.C.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .commandBufferCount = @as(u32, @intCast(queue_data.vk_command_buffers.?.len)),
-            .commandPool = queue_data.vk_command_pool.?,
-            .level = vulkan.C.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        });
-
-        try vulkan.vkCall(device_data.api.vkAllocateCommandBuffers.?, .{ device_data.vk_device, &allocate_info, queue_data.vk_command_buffers.?.ptr });
-    }
-
-    if (queue_data.pipeline == null) {
-        queue_data.pipeline = try pipeline.createSwapchainPipeline(device_data.api, device_data.vk_device, swapchain_data.format);
-    }
-
-    var cmd_buffer = queue_data.vk_command_buffers.?[buffer_idx];
+    var cmd_buffer = copy_data.vk_command_buffers[buffer_idx];
 
     const attachment_info = std.mem.zeroInit(vulkan.C.VkRenderingAttachmentInfo, .{
         .sType = vulkan.C.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
@@ -256,8 +310,6 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.C.VkQueue, pres
         .pColorAttachments = &attachment_info,
     });
 
-    try vulkan.vkCall(device_data.api.vkResetCommandBuffer.?, .{ cmd_buffer, 0 });
-
     const begin_info = std.mem.zeroInit(vulkan.C.VkCommandBufferBeginInfo, .{
         .sType = vulkan.C.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = vulkan.C.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
@@ -265,22 +317,27 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.C.VkQueue, pres
 
     try vulkan.vkCall(device_data.api.vkBeginCommandBuffer.?, .{ cmd_buffer, &begin_info });
 
+    // Transition from uknown to color attachment
     {
         const image_barrier = std.mem.zeroInit(vulkan.C.VkImageMemoryBarrier2, .{
             .sType = vulkan.C.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .dstStageMask = vulkan.C.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            .dstAccessMask = vulkan.C.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            .newLayout = vulkan.C.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .srcQueueFamilyIndex = vulkan.C.VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = vulkan.C.VK_QUEUE_FAMILY_IGNORED,
+            .oldLayout = vulkan.C.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, // From vkQueuePresentKHR
+            .newLayout = vulkan.C.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, // For shader sampling
+            .srcStageMask = vulkan.C.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, // All prior app commands
+            .dstStageMask = vulkan.C.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, // Shader reads
+            .srcAccessMask = 0, // No prior access
+            .dstAccessMask = vulkan.C.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, // Shader samples
+            .srcQueueFamilyIndex = vulkan.C.VK_QUEUE_FAMILY_IGNORED, // Same queue
+            .dstQueueFamilyIndex = vulkan.C.VK_QUEUE_FAMILY_IGNORED, // Same queue
             .image = swapchain_data.backbuffer_images[buffer_idx],
             .subresourceRange = .{
                 .aspectMask = vulkan.C.VK_IMAGE_ASPECT_COLOR_BIT,
                 .levelCount = 1,
                 .layerCount = 1,
+                .baseArrayLayer = 0, // If using array layers
+                .baseMipLevel = 0,
             },
         });
-
         const dep_info = std.mem.zeroInit(vulkan.C.VkDependencyInfo, .{
             .sType = vulkan.C.VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
             .imageMemoryBarrierCount = 1,
@@ -312,13 +369,13 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.C.VkQueue, pres
 
         try vulkan.vkCall(device_data.api.vkCmdSetScissor.?, .{ cmd_buffer, 0, 1, &scissors });
 
-        try vulkan.vkCall(device_data.api.vkCmdBindPipeline.?, .{ cmd_buffer, vulkan.C.VK_PIPELINE_BIND_POINT_GRAPHICS, queue_data.pipeline.?.vk_pipeline });
+        try vulkan.vkCall(device_data.api.vkCmdBindPipeline.?, .{ cmd_buffer, vulkan.C.VK_PIPELINE_BIND_POINT_GRAPHICS, copy_data.pipeline.vk_pipeline });
 
         var image_info = std.mem.zeroInit(vulkan.C.VkDescriptorImageInfo, .{
             .imageView = swapchain_data.backbuffer_image_views[buffer_idx],
 
             .imageLayout = vulkan.C.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .sampler = null,
+            .sampler = copy_data.sampler,
         });
 
         var write_info = std.mem.zeroInit(vulkan.C.VkWriteDescriptorSet, .{
@@ -334,7 +391,7 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.C.VkQueue, pres
             .descriptorCount = 1,
         });
 
-        try vulkan.vkCall(device_data.api.vkCmdPushDescriptorSetKHR.?, .{ cmd_buffer, vulkan.C.VK_PIPELINE_BIND_POINT_GRAPHICS, queue_data.pipeline.?.vk_pipeline_layout, 0, 1, &write_info });
+        try vulkan.vkCall(device_data.api.vkCmdPushDescriptorSetKHR.?, .{ cmd_buffer, vulkan.C.VK_PIPELINE_BIND_POINT_GRAPHICS, copy_data.pipeline.vk_pipeline_layout, 0, 1, &write_info });
 
         try vulkan.vkCall(device_data.api.vkCmdDraw.?, .{ cmd_buffer, 3, 1, 0, 0 });
     }
@@ -344,17 +401,21 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.C.VkQueue, pres
     {
         const image_barrier = std.mem.zeroInit(vulkan.C.VkImageMemoryBarrier2, .{
             .sType = vulkan.C.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .dstStageMask = vulkan.C.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            .dstAccessMask = vulkan.C.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            .newLayout = vulkan.C.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            .oldLayout = vulkan.C.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .srcQueueFamilyIndex = vulkan.C.VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = vulkan.C.VK_QUEUE_FAMILY_IGNORED,
+            .oldLayout = vulkan.C.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, // After shader sampling
+            .newLayout = vulkan.C.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, // Back to app for present
+            .srcStageMask = vulkan.C.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, // Shader read
+            .dstStageMask = vulkan.C.VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, // For presentation
+            .srcAccessMask = vulkan.C.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, // What shader read
+            .dstAccessMask = 0, // No access for present
+            .srcQueueFamilyIndex = vulkan.C.VK_QUEUE_FAMILY_IGNORED, // Same queue
+            .dstQueueFamilyIndex = vulkan.C.VK_QUEUE_FAMILY_IGNORED, // Same queue
             .image = swapchain_data.backbuffer_images[buffer_idx],
             .subresourceRange = .{
                 .aspectMask = vulkan.C.VK_IMAGE_ASPECT_COLOR_BIT,
                 .levelCount = 1,
                 .layerCount = 1,
+                .baseArrayLayer = 0,
+                .baseMipLevel = 0,
             },
         });
 
@@ -370,19 +431,23 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.C.VkQueue, pres
     {
         const image_barrier = std.mem.zeroInit(vulkan.C.VkImageMemoryBarrier2, .{
             .sType = vulkan.C.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .dstStageMask = vulkan.C.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            .dstAccessMask = vulkan.C.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            .newLayout = vulkan.C.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            .srcQueueFamilyIndex = vulkan.C.VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = vulkan.C.VK_QUEUE_FAMILY_IGNORED,
+            .oldLayout = vulkan.C.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, // After rendering wrote
+            .newLayout = vulkan.C.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, // For vkCmdCopyImage
+            .srcStageMask = vulkan.C.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, // Rendering wrote
+            .dstStageMask = vulkan.C.VK_PIPELINE_STAGE_2_TRANSFER_BIT, // Copy reads
+            .srcAccessMask = vulkan.C.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, // What rendering wrote
+            .dstAccessMask = 0, // No prior access
+            .srcQueueFamilyIndex = vulkan.C.VK_QUEUE_FAMILY_IGNORED, // Same queue
+            .dstQueueFamilyIndex = vulkan.C.VK_QUEUE_FAMILY_IGNORED, // Same queue
             .image = hook_image.vk_image,
             .subresourceRange = .{
                 .aspectMask = vulkan.C.VK_IMAGE_ASPECT_COLOR_BIT,
                 .levelCount = 1,
                 .layerCount = 1,
+                .baseArrayLayer = 0,
+                .baseMipLevel = 0,
             },
         });
-
         const dep_info = std.mem.zeroInit(vulkan.C.VkDependencyInfo, .{
             .sType = vulkan.C.VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
             .imageMemoryBarrierCount = 1,
@@ -394,6 +459,8 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.C.VkQueue, pres
 
     try vulkan.vkCall(device_data.api.vkEndCommandBuffer.?, .{cmd_buffer});
 
+    const wait_stage_mask: vulkan.C.VkPipelineStageFlags = vulkan.C.VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+
     const submit_info = std.mem.zeroInit(vulkan.C.VkSubmitInfo, .{
         .sType = vulkan.C.VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .pCommandBuffers = &cmd_buffer,
@@ -402,6 +469,7 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.C.VkQueue, pres
         .waitSemaphoreCount = present_info.waitSemaphoreCount,
         .pSignalSemaphores = &hook_image.vk_sem,
         .signalSemaphoreCount = 1,
+        .pWaitDstStageMask = &wait_stage_mask,
     });
 
     present_info.waitSemaphoreCount = 1;
@@ -447,7 +515,7 @@ fn allocateHookImages(device_data: *VkDeviceData, swapchain_data: SwapchainData)
             .arrayLayers = 1,
             .mipLevels = 1,
             .samples = vulkan.C.VK_SAMPLE_COUNT_1_BIT,
-            .tiling = vulkan.C.VK_IMAGE_TILING_OPTIMAL,
+            .tiling = vulkan.C.VK_IMAGE_TILING_LINEAR,
             .usage = vulkan.C.VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                 vulkan.C.VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                 vulkan.C.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
@@ -495,9 +563,16 @@ fn allocateHookImages(device_data: *VkDeviceData, swapchain_data: SwapchainData)
                 .handleTypes = vulkan.C.VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
             });
 
+            const dedicated_info = std.mem.zeroInit(vulkan.C.VkMemoryDedicatedAllocateInfo, .{
+                .sType = vulkan.C.VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+                .pNext = &export_info,
+                .image = hook_image.vk_image,
+                .buffer = null,
+            });
+
             var memory_allocate_info = std.mem.zeroInit(vulkan.C.VkMemoryAllocateInfo, .{
                 .sType = vulkan.C.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                .pNext = &export_info,
+                .pNext = &dedicated_info,
                 .allocationSize = memory_requirements.size,
                 .memoryTypeIndex = memory_type_index,
             });
@@ -776,7 +851,6 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
     return false;
 }
 
-var vk_device_proc_addr_original: ?*const fn (device: vulkan.VkDevice, name: [*c]const u8) *const anyopaque = null;
 const allocator = std.heap.smp_allocator;
 
 const HookImageData = struct {
@@ -789,11 +863,18 @@ const HookImageData = struct {
 };
 
 const QueueData = struct {
+    const CopyData = struct {
+        vk_command_pool: vulkan.C.VkCommandPool,
+        vk_command_buffers: []vulkan.C.VkCommandBuffer,
+        cmd_buffer_used: []bool,
+        pipeline: pipeline.SwapchainPipeline,
+        sampler: vulkan.C.VkSampler,
+    };
+
     vk_queue: vulkan.C.VkQueue,
     family_index: u32,
-    vk_command_pool: vulkan.C.VkCommandPool = null,
-    vk_command_buffers: ?[]vulkan.C.VkCommandBuffer = null,
-    pipeline: ?pipeline.SwapchainPipeline = null,
+
+    copy_data: ?CopyData,
 };
 
 const ActiveCaptureInstance = struct {
@@ -904,24 +985,16 @@ pub fn vkQueuePresentKHR(queue: vulkan.C.VkQueue, present_info: *const vulkan.C.
 
             const is_active = blk: {
                 break :blk isOrTrySetSwapchainActive(device_data, present_info.pSwapchains[0..present_info.swapchainCount]) catch |e| {
-                    switch (e) {
-                        else => {
-                            std.log.err("Error occured during isOrTrySetSwapchainActive invocation. Error: {s}", .{@errorName(e)});
-                            device_data.had_error = true;
-                            break :blk false;
-                        },
-                    }
+                    std.log.err("Error occured during isOrTrySetSwapchainActive invocation. Error: {s}", .{@errorName(e)});
+                    device_data.had_error = true;
+                    break :blk false;
                 };
             };
 
             if (is_active) {
                 copyIntoHookTexture(device_data, queue, &present) catch |e| {
-                    switch (e) {
-                        else => {
-                            std.log.err("Error occured during copyIntoHookTexture invocation. Error: {s}", .{@errorName(e)});
-                            device_data.had_error = true;
-                        },
-                    }
+                    std.log.err("Error occured during copyIntoHookTexture invocation. Error: {s}", .{@errorName(e)});
+                    device_data.had_error = true;
                 };
             }
         }
@@ -932,7 +1005,7 @@ pub fn vkQueuePresentKHR(queue: vulkan.C.VkQueue, present_info: *const vulkan.C.
     }
 }
 
-fn vkDestroySwapchainKHR(device: vulkan.C.VkDevice, swapchain: vulkan.C.VkSwapchainKHR, pAllocator: [*c]const vulkan.C.VkAllocationCallbacks) void {
+fn vkDestroySwapchainKHR(device: vulkan.C.VkDevice, swapchain: vulkan.C.VkSwapchainKHR, pAllocator: [*c]const vulkan.C.VkAllocationCallbacks) callconv(.c) void {
     if (getVulkanDeviceDataFromVkDevice(device)) |device_data| {
         if (active_capture_instance) |capture_instance| {
             active_capture_instance_lck.lockUncancelable(io);
@@ -1010,7 +1083,7 @@ fn rememberSwapchain(device_data: *VkDeviceData, swapchain: vulkan.C.VkSwapchain
     );
 }
 
-pub fn vkCreateSwapchainKHR(device: vulkan.C.VkDevice, pCreateInfo: *const vulkan.C.VkSwapchainCreateInfoKHR, pAllocator: *const vulkan.C.VkAllocationCallbacks, pSwapchain: *vulkan.C.VkSwapchainKHR) vulkan.C.VkResult {
+pub fn vkCreateSwapchainKHR(device: vulkan.C.VkDevice, pCreateInfo: *const vulkan.C.VkSwapchainCreateInfoKHR, pAllocator: *const vulkan.C.VkAllocationCallbacks, pSwapchain: *vulkan.C.VkSwapchainKHR) callconv(.c) vulkan.C.VkResult {
     if (getVulkanDeviceDataFromVkDevice(device)) |device_data| {
         var create_info = pCreateInfo.*;
         create_info.imageUsage |= vulkan.C.VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -1018,18 +1091,14 @@ pub fn vkCreateSwapchainKHR(device: vulkan.C.VkDevice, pCreateInfo: *const vulka
 
         if (swapchain_res == vulkan.C.VK_SUCCESS) {
             rememberSwapchain(device_data, pSwapchain.*, pCreateInfo) catch |e| {
-                switch (e) {
-                    else => {
-                        std.log.err("Failed to remember swapchain. Error: {s}", .{@errorName(e)});
-                        device_data.had_error = true;
-                    },
-                }
+                std.log.err("Failed to remember swapchain. Error: {s}", .{@errorName(e)});
+                device_data.had_error = true;
             };
         }
 
         return swapchain_res;
     } else {
-        std.log.err("vkCreateSwapchainKHR failed, we have no device data", .{});
+        std.log.err("vkCreateSwapchainKHR failed, we have no device data for {}", .{@intFromPtr(device)});
         return vulkan.C.VK_ERROR_UNKNOWN;
     }
 }
@@ -1047,10 +1116,9 @@ fn rememberQueue(device_data: *VkDeviceData, family_index: u32, queue: vulkan.C.
     device_data.device_lock.lockUncancelable(io);
     defer device_data.device_lock.unlock(io);
 
-    std.log.info("Found new queue: {}", .{@intFromPtr(queue)});
-
     vk_queue_to_device_data.put(allocator, queue, device_data) catch unreachable;
     device_data.queues.append(allocator, .{
+        .copy_data = null,
         .vk_queue = queue,
         .family_index = family_index,
     }) catch unreachable;
@@ -1084,7 +1152,7 @@ fn rememberPhysicalDevices(instance_data: *VkInstanceData, phys_devices: []vulka
             defer instance_data.instance_lock.unlock(io);
 
             try instance_data.physical_devices.append(allocator, physical_device);
-            std.log.info("Instance {} found physical device {}", .{ @intFromPtr(instance_data), @intFromPtr(physical_device) });
+            std.log.info("Instance {} found physical device {}", .{ @intFromPtr(instance_data.instance), @intFromPtr(physical_device) });
         }
     }
 }
@@ -1108,12 +1176,8 @@ pub fn vkEnumeratePhysicalDevices(instance: vulkan.C.VkInstance, pPhysicalDevice
         if (result == vulkan.C.VK_SUCCESS) {
             if (pPhysicalDevices != null) {
                 rememberPhysicalDevices(instance_data, pPhysicalDevices[0..@intCast(pPhysicalDeviceCount.*)]) catch |e| {
-                    switch (e) {
-                        else => {
-                            std.log.err("Failed to rememberPhysicalDevices. Error: {s}", .{@errorName(e)});
-                            return vulkan.C.VK_ERROR_UNKNOWN;
-                        },
-                    }
+                    std.log.err("Failed to rememberPhysicalDevices. Error: {s}", .{@errorName(e)});
+                    return vulkan.C.VK_ERROR_UNKNOWN;
                 };
             }
         }
@@ -1139,6 +1203,8 @@ fn injectDeviceFeatures(create_info: *vulkan.C.VkDeviceCreateInfo) void {
             vulkan.C.VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
             vulkan.C.VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
             vulkan.C.VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+            vulkan.C.VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME,
+            vulkan.C.VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
         };
 
         var all_extensions = allocator.alloc([*:0]const u8, our_extensions.len + create_info.enabledExtensionCount) catch unreachable;
@@ -1248,10 +1314,10 @@ fn rememberNewDevice(instance_data: *VkInstanceData, physical_device: vulkan.C.V
         try vk_device_to_device_data.put(allocator, device, device_data);
     }
 
-    std.log.info("Instance {} found device {}", .{ @intFromPtr(instance_data), @intFromPtr(device) });
+    std.log.info("Instance {} found device {}", .{ @intFromPtr(instance_data.instance), @intFromPtr(device) });
 }
 
-pub fn vkCreateDevice(physicalDevice: vulkan.C.VkPhysicalDevice, pCreateInfo: [*c]const vulkan.C.VkDeviceCreateInfo, pAllocator: [*c]const vulkan.C.VkAllocationCallbacks, pDevice: [*c]vulkan.C.VkDevice) vulkan.C.VkResult {
+pub fn vkCreateDevice(physicalDevice: vulkan.C.VkPhysicalDevice, pCreateInfo: [*c]const vulkan.C.VkDeviceCreateInfo, pAllocator: [*c]const vulkan.C.VkAllocationCallbacks, pDevice: [*c]vulkan.C.VkDevice) callconv(.c) vulkan.C.VkResult {
     var create_info = pCreateInfo.*;
 
     injectDeviceFeatures(&create_info);
@@ -1276,6 +1342,7 @@ pub fn vkCreateDevice(physicalDevice: vulkan.C.VkPhysicalDevice, pCreateInfo: [*
         return vulkan.C.VK_ERROR_INITIALIZATION_FAILED;
     }
 
+    // Get the chain info
     var layer_create_info: ?*vulkan.C.VkLayerDeviceCreateInfo = @ptrCast(@alignCast(@constCast(create_info.pNext)));
     while (layer_create_info != null and (layer_create_info.?.sType != vulkan.C.VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO or layer_create_info.?.function != vulkan.C.VK_LAYER_LINK_INFO)) {
         layer_create_info = @ptrCast(@alignCast(@constCast(layer_create_info.?.pNext)));
@@ -1288,20 +1355,16 @@ pub fn vkCreateDevice(physicalDevice: vulkan.C.VkPhysicalDevice, pCreateInfo: [*
     const get_instance_proc_addr = layer_create_info.?.u.pLayerInfo.*.pfnNextGetInstanceProcAddr;
     const get_device_proc_addr = layer_create_info.?.u.pLayerInfo.*.pfnNextGetDeviceProcAddr;
 
-    const create_device: vulkan.C.PFN_vkCreateDevice = @ptrCast(get_instance_proc_addr.?(null, "vkCreateDevice"));
+    const create_device: vulkan.C.PFN_vkCreateDevice = @ptrCast(get_instance_proc_addr.?(instance_data_maybe.?.instance, "vkCreateDevice"));
 
+    // Move layer info for the next layer
     layer_create_info.?.u.pLayerInfo = layer_create_info.?.u.pLayerInfo.*.pNext;
 
     const result = create_device.?(physicalDevice, &create_info, pAllocator, pDevice);
 
     if (result == vulkan.C.VK_SUCCESS) {
-        // std.log.info("Crete dev", .{});
         rememberNewDevice(instance_data_maybe.?, physicalDevice, pDevice.*, get_device_proc_addr) catch |e| {
-            switch (e) {
-                else => {
-                    std.log.err("Failed to rememberNewDevice. Error: {s}", .{@errorName(e)});
-                },
-            }
+            std.log.err("Failed to rememberNewDevice. Error: {s}", .{@errorName(e)});
         };
     }
 
@@ -1376,11 +1439,7 @@ fn vkAllocateInstanceData(instance: vulkan.C.VkInstance, get_proc_addr: vulkan.C
 
 pub fn vkCreateInstance(pCreateInfo: *const vulkan.C.VkInstanceCreateInfo, pAllocator: *const vulkan.C.VkAllocationCallbacks, pInstance: *vulkan.C.VkInstance) callconv(.c) vulkan.C.VkResult {
     configureLogLevel() catch |e| {
-        switch (e) {
-            else => {
-                std.log.err("Error occured while trying to configure log level: {s}", .{@errorName(e)});
-            },
-        }
+        std.log.err("Error occured while trying to configure log level: {s}", .{@errorName(e)});
     };
 
     var layer_create_info: ?*vulkan.C.VkLayerInstanceCreateInfo = @ptrCast(@alignCast(@constCast(pCreateInfo.pNext)));
@@ -1405,12 +1464,8 @@ pub fn vkCreateInstance(pCreateInfo: *const vulkan.C.VkInstanceCreateInfo, pAllo
         std.log.info("Creating instace", .{});
 
         vkAllocateInstanceData(pInstance.*, get_instance_proc_addr) catch |e| {
-            switch (e) {
-                else => {
-                    std.log.err("Failed to allocate instance data. Error: {s}", .{@errorName(e)});
-                    return vulkan.C.VK_ERROR_INITIALIZATION_FAILED;
-                },
-            }
+            std.log.err("Failed to allocate instance data. Error: {s}", .{@errorName(e)});
+            return vulkan.C.VK_ERROR_INITIALIZATION_FAILED;
         };
     }
 
@@ -1426,7 +1481,7 @@ pub export fn vkBackbufferCapture_vkGetInstanceProcAddr(instance: vulkan.C.VkIns
         .{ &vkBackbufferCapture_vkGetDeviceProcAddr, "vkGetDeviceProcAddr" },
     };
 
-    std.log.debug("Looking for instance func: {s}", .{std.mem.span(pName)});
+    std.log.debug("Looking for instance func: {s} on {}", .{ std.mem.span(pName), @intFromPtr(instance) });
 
     inline for (OverridenFunctions) |function| {
         if (std.mem.eql(u8, std.mem.span(pName), function[1])) {
@@ -1442,13 +1497,14 @@ pub export fn vkBackbufferCapture_vkGetInstanceProcAddr(instance: vulkan.C.VkIns
         }
     }
 
+    std.debug.assert(false);
     return null;
 }
 
 pub export fn vkBackbufferCapture_vkGetDeviceProcAddr(device: vulkan.C.VkDevice, name: [*c]const u8) callconv(.c) ?*const anyopaque {
     const name_as_span = std.mem.span(name);
 
-    std.log.debug("Looking for device funcc: {s}", .{name_as_span});
+    std.log.debug("Looking for device func: {s} on {}", .{ name_as_span, @intFromPtr(device) });
 
     const OverridenFunctions = &.{
         .{ &vkCreateDevice, "vkCreateDevice" },
@@ -1472,6 +1528,7 @@ pub export fn vkBackbufferCapture_vkGetDeviceProcAddr(device: vulkan.C.VkDevice,
         return device_data.api.vkGetDeviceProcAddr.?(device, name);
     }
 
+    std.debug.assert(false);
     return null;
 }
 
@@ -1483,6 +1540,7 @@ pub const std_options = std.Options{
 var log_level: std.log.Level = .warn;
 
 fn configureLogLevel() !void {
+    log_level = .debug;
     // How should we do this lol
     //
     // if (env_map.get("BACKBUFFER_CAPTURE_DEBUG")) |level_str| {

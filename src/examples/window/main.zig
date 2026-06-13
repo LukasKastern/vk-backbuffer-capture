@@ -14,7 +14,7 @@ const X11Lib = struct {
 
     XOpenDisplay: *const fn ([*c]const u8) callconv(.c) ?*c.Display,
     XCloseDisplay: *const fn (?*c.Display) callconv(.c) c_int,
-    XSynchronize: *const fn (?*c.Display, c_int) ?*const fn (?*c.Display) callconv(.c) c_int,
+    XSynchronize: *const fn (?*c.Display, c_int) callconv(.c) ?*const fn (?*c.Display) callconv(.c) c_int,
 
     XCreateColormap: *const fn (?*c.Display, c.Window, [*c]c.Visual, c_int) callconv(.c) c.Colormap,
     XCreateWindow: *const fn (?*c.Display, c.Window, c_int, c_int, c_uint, c_uint, c_uint, c_int, c_uint, [*c]c.Visual, c_ulong, [*c]c.XSetWindowAttributes) callconv(.c) c.Window,
@@ -154,6 +154,9 @@ pub fn main(init: std.process.Init) !void {
     try backbuffer_capture.capture_return_frame(state, &init_backbuffer_frame);
 
     const display = x11.XOpenDisplay("");
+    if (display == null) {
+        return error.FailedToOpenDisplay;
+    }
     _ = x11.XSynchronize(display, 1);
 
     var single_buffer_attributes = [_]c_int{

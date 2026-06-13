@@ -275,9 +275,9 @@ pub fn capture_import_opengl_texture(state: api.VKBackbufferCaptureState, frame:
     // Ehhh. We shouldn't do this here lol.
     const GL_RGBA8 = @import("std").zig.c_translation.helpers.promoteIntLiteral(c_int, 0x8058, .hex);
     const GL_TEXTURE_TILING_EXT = @import("std").zig.c_translation.helpers.promoteIntLiteral(c_int, 0x9580, .hex);
-    const GL_OPTIMAL_TILING_EXT = @import("std").zig.c_translation.helpers.promoteIntLiteral(c_int, 0x9584, .hex);
+    const GL_LINEAR_TILING_EXT = @import("std").zig.c_translation.helpers.promoteIntLiteral(c_int, 0x9585, .hex);
 
-    gl_api.gl_tex_parameter(GL_TEXTURE_2D, GL_TEXTURE_TILING_EXT, GL_OPTIMAL_TILING_EXT);
+    gl_api.gl_tex_parameter(GL_TEXTURE_2D, GL_TEXTURE_TILING_EXT, GL_LINEAR_TILING_EXT);
 
     if (gl_api.gl_get_error() != 0) {
         return error.ApiError;

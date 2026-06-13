@@ -4,6 +4,7 @@ pub const C = @cImport({
 });
 
 pub const InstanceApi = struct {
+    vkCreateDevice: C.PFN_vkCreateDevice,
     vkCreateInstance: C.PFN_vkCreateInstance,
     vkEnumeratePhysicalDevices: C.PFN_vkEnumeratePhysicalDevices,
     vkGetInstanceProcAddr: C.PFN_vkGetInstanceProcAddr,
@@ -31,6 +32,9 @@ pub const DeviceApi = struct {
     vkWaitForFences: C.PFN_vkWaitForFences,
     vkResetFences: C.PFN_vkResetFences,
     vkCreateCommandPool: C.PFN_vkCreateCommandPool,
+    vkDestroyCommandPool: C.PFN_vkDestroyCommandPool,
+    vkDestroySampler: C.PFN_vkDestroySampler,
+    vkFreeCommandBuffers: C.PFN_vkFreeCommandBuffers,
     vkAllocateCommandBuffers: C.PFN_vkAllocateCommandBuffers,
     vkResetCommandBuffer: C.PFN_vkResetCommandBuffer,
     vkBeginCommandBuffer: C.PFN_vkBeginCommandBuffer,
