@@ -24,6 +24,7 @@ int main(int argc, char *argv[]) {
 
   vk_backbuffer_capture_result result;
   if((result = vk_backbuffer_capture_init(&options, &state)) != VkBackbufferCaptureResult_Success) {
+    printf("Capture init failed %i\n", result);
     return result;
   }
 
@@ -31,12 +32,14 @@ int main(int argc, char *argv[]) {
 
   struct VKBackbufferFrame frame;
   if((result = vk_backbuffer_capture_next_frame(state, 1000 * 1000 * 100, &frame)) != VkBackbufferCaptureResult_Success) {
+    printf("Capture next frame failed %i\n", result);
      return result; 
   }
 
   printf("Deinitializing\n");
 
   if((result = vk_backbuffer_capture_return_frame(state, &frame)) != VkBackbufferCaptureResult_Success) {
+    printf("Capture return frame failed %i\n", result);
     return result;
   }
 

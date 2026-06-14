@@ -1,6 +1,5 @@
 const std = @import("std");
-const api = @cImport(@cInclude("backbuffer-capture/api.h"));
-pub usingnamespace api;
+pub const api = @cImport(@cInclude("backbuffer-capture/api.h"));
 
 const shared = @import("shared");
 const c = shared.c;
@@ -11,23 +10,24 @@ const BackbufferCaptureState = struct {
     texture_handles: []c_int,
 
     opengl_import_api: ?struct {
-        gl_get_error: *const fn () callconv(.C) c_int,
-        gl_gen_textures: *const fn (n: i32, textures: [*c]u32) callconv(.C) void,
-        gl_bind_texture: *const fn (target: i32, texture: u32) callconv(.C) void,
-        gl_tex_parameter: *const fn (target: c_int, name: c_int, value: c_int) callconv(.C) void,
+        gl_get_error: *const fn () callconv(.c) c_int,
+        gl_gen_textures: *const fn (n: i32, textures: [*c]u32) callconv(.c) void,
+        gl_bind_texture: *const fn (target: i32, texture: u32) callconv(.c) void,
+        gl_tex_parameter: *const fn (target: c_int, name: c_int, value: c_int) callconv(.c) void,
 
-        create_memory_objects_ext: *const fn (n: c_int, memory_objects: *c_uint) callconv(.C) void,
-        import_memory_fd_ext: *const fn (memory: u32, size: u64, handle_type: i32, fd: i32) callconv(.C) void,
-        is_memory_object_ext: *const fn (memory_object: u32) callconv(.C) c_int,
-        tex_storage_mem_2d_ext: *const fn (target: i32, levels: i32, internal_format: i32, width: i32, height: i32, memory: u32, offset: u64) callconv(.C) void,
+        create_memory_objects_ext: *const fn (n: c_int, memory_objects: *c_uint) callconv(.c) void,
+        import_memory_fd_ext: *const fn (memory: u32, size: u64, handle_type: i32, fd: i32) callconv(.c) void,
+        is_memory_object_ext: *const fn (memory_object: u32) callconv(.c) c_int,
+        tex_storage_mem_2d_ext: *const fn (target: i32, levels: i32, internal_format: i32, width: i32, height: i32, memory: u32, offset: u64) callconv(.c) void,
     },
 };
 
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-const allocator = gpa.allocator();
+const allocator = std.heap.smp_allocator;
+var threaded: std.Io.Threaded = .init_single_threaded;
+var io: std.Io = threaded.io();
 
-pub const std_options = struct {
-    pub const log_level = .warn;
+pub const std_options = std.Options{
+    .log_level = .warn,
 };
 
 const VkBackbufferErrors = error{
@@ -40,10 +40,10 @@ const VkBackbufferErrors = error{
 };
 
 pub fn capture_init(options: *const api.VKBackbufferInitializeOptions, out_state: *api.VKBackbufferCaptureState) VkBackbufferErrors!void {
-    var shm_section_name = try shared.formatSectionName(options.target_app_id);
+    const shm_section_name = try shared.formatSectionName(options.target_app_id);
 
     std.log.info("Open shm section: {s}", .{shm_section_name});
-    var shm_handle = c.shm_open(shm_section_name, c.O_RDWR, 0);
+    const shm_handle = c.shm_open(shm_section_name, c.O_RDWR, 0);
 
     if (shm_handle == -1) {
         return VkBackbufferErrors.RemoteNotFound;
@@ -51,8 +51,8 @@ pub fn capture_init(options: *const api.VKBackbufferInitializeOptions, out_state
 
     defer _ = c.close(shm_handle);
 
-    var shm_buf: *shared.HookSharedData = @alignCast(
-        @ptrCast(c.mmap(@as(*anyopaque, @ptrFromInt(@as(usize, @intCast(shm_handle)))), @sizeOf(shared.HookSharedData), c.PROT_READ | c.PROT_WRITE, c.MAP_SHARED, shm_handle, 0)),
+    var shm_buf: *shared.HookSharedData = @ptrCast(
+        @alignCast(c.mmap(@as(*anyopaque, @ptrFromInt(@as(usize, @intCast(shm_handle)))), @sizeOf(shared.HookSharedData), c.PROT_READ | c.PROT_WRITE, c.MAP_SHARED, shm_handle, 0)),
     );
 
     if (@intFromPtr(shm_buf) == @intFromPtr(c.MAP_FAILED)) {
@@ -77,7 +77,11 @@ pub fn capture_init(options: *const api.VKBackbufferInitializeOptions, out_state
             res = c.ptrace(c.PTRACE_DETACH, options.target_app_id, @as(c_int, 0), @as(c_int, 0));
 
             if (res != 0) {
-                std.time.sleep(std.time.ns_per_ms * 15);
+                std.Io.sleep(io, .fromMilliseconds(15), .awake) catch {
+                    // Yield on error
+                    //
+                    std.Thread.yield() catch {};
+                };
             }
         }
     }
@@ -93,7 +97,7 @@ pub fn capture_init(options: *const api.VKBackbufferInitializeOptions, out_state
     defer _ = c.pthread_mutex_unlock(&shm_buf.lock);
 
     {
-        var res = c.pthread_mutex_trylock(&shm_buf.hook_process_alive_lock);
+        const res = c.pthread_mutex_trylock(&shm_buf.hook_process_alive_lock);
         if (res == 0 or res == @intFromEnum(std.os.linux.E.OWNERDEAD)) {
             // Process is not alive anymore..
 
@@ -106,13 +110,13 @@ pub fn capture_init(options: *const api.VKBackbufferInitializeOptions, out_state
         }
     }
 
-    var pid = c.syscall(c.SYS_pidfd_open, options.target_app_id, @as(c_int, 0));
+    const pid = c.syscall(c.SYS_pidfd_open, options.target_app_id, @as(c_int, 0));
 
-    var handles = try allocator.alloc(c_int, shm_buf.num_textures);
+    const handles = try allocator.alloc(c_int, shm_buf.num_textures);
     errdefer allocator.free(handles);
 
     for (shm_buf.texture_handles[0..shm_buf.num_textures], handles) |texture_handle, *handle| {
-        var out_handle = c.syscall(c.SYS_pidfd_getfd, pid, texture_handle, @as(c_int, 0));
+        const out_handle = c.syscall(c.SYS_pidfd_getfd, pid, texture_handle, @as(c_int, 0));
         handle.* = @intCast(out_handle);
     }
 
@@ -138,7 +142,7 @@ pub fn capture_deinit(state: api.VKBackbufferCaptureState) void {
 pub fn capture_try_get_next_frame(state: api.VKBackbufferCaptureState, wait_time_ns: u32, out_frame: *api.VKBackbufferFrame) VkBackbufferErrors!void {
     var backbuffer_capture_state = @as(*BackbufferCaptureState, @ptrCast(@alignCast(state)));
 
-    var lck_res = c.pthread_mutex_trylock(&backbuffer_capture_state.shared_data.hook_process_alive_lock);
+    const lck_res = c.pthread_mutex_trylock(&backbuffer_capture_state.shared_data.hook_process_alive_lock);
 
     if (lck_res == 0 or lck_res == @intFromEnum(std.os.linux.E.OWNERDEAD)) {
         if (lck_res == @intFromEnum(std.os.linux.E.OWNERDEAD)) {
@@ -188,7 +192,7 @@ pub fn capture_return_frame(state: api.VKBackbufferCaptureState, frame: *const a
     _ = c.pthread_mutex_lock(&backbuffer_capture_state.shared_data.lock);
     defer _ = c.pthread_mutex_unlock(&backbuffer_capture_state.shared_data.lock);
 
-    var frame_idx = blk: {
+    const frame_idx = blk: {
         for (backbuffer_capture_state.texture_handles, 0..) |handle, idx| {
             if (handle == frame.frame_fd_opaque) {
                 break :blk idx;
@@ -205,7 +209,7 @@ pub fn capture_return_frame(state: api.VKBackbufferCaptureState, frame: *const a
 }
 
 fn dlsymLoadOrError(dl: ?*anyopaque, sym: [:0]const u8) VkBackbufferErrors!*anyopaque {
-    var symbol = c.dlsym(dl, sym);
+    const symbol = c.dlsym(dl, sym);
     if (symbol == null) {
         return error.ApiError;
     }
@@ -218,17 +222,17 @@ pub fn capture_import_opengl_texture(state: api.VKBackbufferCaptureState, frame:
 
     if (backbuffer_capture_state.opengl_import_api == null) {
         backbuffer_capture_state.opengl_import_api = blk: {
-            var glx = c.dlopen("libGLX.so", c.RTLD_NOW);
+            const glx = c.dlopen("libGLX.so", c.RTLD_NOW);
             if (glx == null) {
                 return error.ApiError;
             }
 
-            var gl = c.dlopen("libGL.so", c.RTLD_NOW);
+            const gl = c.dlopen("libGL.so", c.RTLD_NOW);
             if (gl == null) {
                 return error.ApiError;
             }
 
-            var glx_load: *const fn (name: [*c]const u8) callconv(.C) ?*anyopaque =
+            const glx_load: *const fn (name: [*c]const u8) callconv(.c) ?*anyopaque =
                 @ptrCast(try dlsymLoadOrError(gl, "glXGetProcAddress"));
 
             break :blk .{
@@ -269,11 +273,11 @@ pub fn capture_import_opengl_texture(state: api.VKBackbufferCaptureState, frame:
     defer gl_api.gl_bind_texture(GL_TEXTURE_2D, 0);
 
     // Ehhh. We shouldn't do this here lol.
-    const GL_RGBA8 = @import("std").zig.c_translation.promoteIntLiteral(c_int, 0x8058, .hexadecimal);
-    const GL_TEXTURE_TILING_EXT = @import("std").zig.c_translation.promoteIntLiteral(c_int, 0x9580, .hexadecimal);
-    const GL_OPTIMAL_TILING_EXT = @import("std").zig.c_translation.promoteIntLiteral(c_int, 0x9584, .hexadecimal);
+    const GL_RGBA8 = @import("std").zig.c_translation.helpers.promoteIntLiteral(c_int, 0x8058, .hex);
+    const GL_TEXTURE_TILING_EXT = @import("std").zig.c_translation.helpers.promoteIntLiteral(c_int, 0x9580, .hex);
+    const GL_LINEAR_TILING_EXT = @import("std").zig.c_translation.helpers.promoteIntLiteral(c_int, 0x9585, .hex);
 
-    gl_api.gl_tex_parameter(GL_TEXTURE_2D, GL_TEXTURE_TILING_EXT, GL_OPTIMAL_TILING_EXT);
+    gl_api.gl_tex_parameter(GL_TEXTURE_2D, GL_TEXTURE_TILING_EXT, GL_LINEAR_TILING_EXT);
 
     if (gl_api.gl_get_error() != 0) {
         return error.ApiError;
@@ -321,22 +325,22 @@ fn vk_backbuffer_error_to_result(err: VkBackbufferErrors!void) api.vk_backbuffer
     return api.VkBackbufferCaptureResult_Success;
 }
 
-pub export fn vk_backbuffer_capture_init(options: *const api.VKBackbufferInitializeOptions, out_state: *api.VKBackbufferCaptureState) callconv(.C) api.vk_backbuffer_capture_result {
+pub export fn vk_backbuffer_capture_init(options: *const api.VKBackbufferInitializeOptions, out_state: *api.VKBackbufferCaptureState) callconv(.c) api.vk_backbuffer_capture_result {
     return vk_backbuffer_error_to_result(capture_init(options, out_state));
 }
 
-pub export fn vk_backbuffer_capture_deinit(state: api.VKBackbufferCaptureState) callconv(.C) void {
+pub export fn vk_backbuffer_capture_deinit(state: api.VKBackbufferCaptureState) callconv(.c) void {
     capture_deinit(state);
 }
 
-pub export fn vk_backbuffer_capture_next_frame(state: api.VKBackbufferCaptureState, wait_time: u32, frame: *api.VKBackbufferFrame) callconv(.C) api.vk_backbuffer_capture_result {
+pub export fn vk_backbuffer_capture_next_frame(state: api.VKBackbufferCaptureState, wait_time: u32, frame: *api.VKBackbufferFrame) callconv(.c) api.vk_backbuffer_capture_result {
     return vk_backbuffer_error_to_result(capture_try_get_next_frame(state, wait_time, frame));
 }
 
-pub export fn vk_backbuffer_capture_return_frame(state: api.VKBackbufferCaptureState, frame: *api.VKBackbufferFrame) callconv(.C) api.vk_backbuffer_capture_result {
+pub export fn vk_backbuffer_capture_return_frame(state: api.VKBackbufferCaptureState, frame: *api.VKBackbufferFrame) callconv(.c) api.vk_backbuffer_capture_result {
     return vk_backbuffer_error_to_result(capture_return_frame(state, frame));
 }
 
-pub export fn vk_backbuffer_capture_import_opengl_texture(state: api.VKBackbufferCaptureState, frame: *const api.VKBackbufferFrame, gl_tex: u32) callconv(.C) api.vk_backbuffer_capture_result {
+pub export fn vk_backbuffer_capture_import_opengl_texture(state: api.VKBackbufferCaptureState, frame: *const api.VKBackbufferFrame, gl_tex: u32) callconv(.c) api.vk_backbuffer_capture_result {
     return vk_backbuffer_error_to_result(capture_import_opengl_texture(state, frame, gl_tex));
 }

@@ -32,7 +32,7 @@ pub const HookSharedData = extern struct {
 
     texture_locks: [MaxTextures]c.pthread_mutex_t,
 
-    format: vulkan.VkFormat,
+    format: vulkan.C.VkFormat,
 
     width: u32,
 
@@ -53,6 +53,6 @@ pub const HookSharedData = extern struct {
 };
 
 pub fn formatSectionName(process_id: c_int) ![:0]const u8 {
-    var shm_section_name = try std.fmt.bufPrintZ(&shm_section_name_buffer, "vk-backbuffer-hook-{}", .{process_id});
+    const shm_section_name = try std.fmt.bufPrintZ(&shm_section_name_buffer, "vk-backbuffer-hook-{}", .{process_id});
     return shm_section_name;
 }

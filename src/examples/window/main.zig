@@ -3,40 +3,37 @@
 
 const std = @import("std");
 
-const c = @cImport({
-    @cInclude("GL/glx.h");
-    @cInclude("X11/X.h");
-    @cInclude("X11/Xlib.h");
-    @cInclude("vulkan/vulkan_core.h");
-});
+const backbuffer_capture = @import("backbuffer-capture");
+
+const c = @import("c");
 
 var x11: X11Lib = undefined;
 
 const X11Lib = struct {
     handle: std.DynLib,
 
-    XOpenDisplay: *const @TypeOf(c.XOpenDisplay),
-    XCloseDisplay: *const @TypeOf(c.XCloseDisplay),
-    XSynchronize: *const @TypeOf(c.XSynchronize),
+    XOpenDisplay: *const fn ([*c]const u8) callconv(.c) ?*c.Display,
+    XCloseDisplay: *const fn (?*c.Display) callconv(.c) c_int,
+    XSynchronize: *const fn (?*c.Display, c_int) callconv(.c) ?*const fn (?*c.Display) callconv(.c) c_int,
 
-    XCreateColormap: *const @TypeOf(c.XCreateColormap),
-    XCreateWindow: *const @TypeOf(c.XCreateWindow),
-    XDestroyWindow: *const @TypeOf(c.XDestroyWindow),
+    XCreateColormap: *const fn (?*c.Display, c.Window, [*c]c.Visual, c_int) callconv(.c) c.Colormap,
+    XCreateWindow: *const fn (?*c.Display, c.Window, c_int, c_int, c_uint, c_uint, c_uint, c_int, c_uint, [*c]c.Visual, c_ulong, [*c]c.XSetWindowAttributes) callconv(.c) c.Window,
+    XDestroyWindow: *const fn (?*c.Display, c.Window) callconv(.c) c_int,
 
-    XMapWindow: *const @TypeOf(c.XMapWindow),
-    XUnmapWindow: *const @TypeOf(c.XUnmapWindow),
+    XMapWindow: *const fn (?*c.Display, c.Window) callconv(.c) c_int,
+    XUnmapWindow: *const fn (?*c.Display, c.Window) callconv(.c) c_int,
 
-    XFlush: *const @TypeOf(c.XFlush),
+    XFlush: *const fn (?*c.Display) callconv(.c) c_int,
 
-    XStoreName: *const @TypeOf(c.XStoreName),
+    XStoreName: *const fn (?*c.Display, c.Window, [*c]const u8) callconv(.c) c_int,
 
-    XGetWindowAttributes: *const @TypeOf(c.XGetWindowAttributes),
-    XPending: *const @TypeOf(c.XPending),
-    XNextEvent: *const @TypeOf(c.XNextEvent),
+    XGetWindowAttributes: *const fn (?*c.Display, c.Window, [*c]c.XWindowAttributes) callconv(.c) c_int,
+    XPending: *const fn (?*c.Display) callconv(.c) c_int,
+    XNextEvent: *const fn (?*c.Display, [*c]c.XEvent) callconv(.c) c_int,
 
     pub fn load() !void {
         x11.handle = std.DynLib.open("libX11.so") catch return error.FailedToLoadX11;
-        inline for (@typeInfo(X11Lib).Struct.fields[1..]) |field| {
+        inline for (@typeInfo(X11Lib).@"struct".fields[1..]) |field| {
             const name = std.fmt.comptimePrint("{s}\x00", .{field.name});
             const name_z: [:0]const u8 = @ptrCast(name[0 .. name.len - 1]);
             @field(x11, field.name) = x11.handle.lookup(field.type, name_z) orelse {
@@ -50,22 +47,30 @@ const X11Lib = struct {
 var glx: GLXLib = undefined;
 
 const GLXLib = struct {
+    const GLXChooseFBConfig = *const fn (dpy: ?*c.Display, screen: c_int, attribList: [*c]const c_int, nitems: [*c]c_int) callconv(.c) [*c]c.GLXFBConfig;
+    const XLGetVisualFromFBConfig = *const fn (dpy: ?*c.Display, config: c.GLXFBConfig) callconv(.c) [*c]c.XVisualInfo;
+    const GLXMakeContextCurrent = *const fn (dpy: ?*c.Display, draw: c.GLXDrawable, read: c.GLXDrawable, ctx: c.GLXContext) callconv(.c) c_int;
+    const GLXCreateWindow = *const fn (dpy: ?*c.Display, config: c.GLXFBConfig, win: c.Window, attribList: [*c]const c_int) callconv(.c) c.GLXWindow;
+    const GLXCreateNewContext = *const fn (dpy: ?*c.Display, config: c.GLXFBConfig, renderType: c_int, shareList: c.GLXContext, direct: c_int) callconv(.c) c.GLXContext;
+    const GLXDestroyContext = *const fn (dpy: ?*c.Display, ctx: c.GLXContext) callconv(.c) void;
+    const GLXDestroyWindow = *const fn (dpy: ?*c.Display, window: c.GLXWindow) callconv(.c) void;
+
     handle: std.DynLib,
 
-    glXChooseFBConfig: *const @TypeOf(c.glXChooseFBConfig),
-    glXGetVisualFromFBConfig: *const @TypeOf(c.glXGetVisualFromFBConfig),
+    glXChooseFBConfig: GLXChooseFBConfig,
+    glXGetVisualFromFBConfig: XLGetVisualFromFBConfig,
 
-    glXMakeContextCurrent: *const @TypeOf(c.glXMakeContextCurrent),
-    glXCreateWindow: *const @TypeOf(c.glXCreateWindow),
+    glXMakeContextCurrent: GLXMakeContextCurrent,
+    glXCreateWindow: GLXCreateWindow,
 
-    glXCreateNewContext: *const @TypeOf(c.glXCreateNewContext),
-    glXDestroyContext: *const @TypeOf(c.glXDestroyContext),
+    glXCreateNewContext: GLXCreateNewContext,
+    glXDestroyContext: GLXDestroyContext,
 
-    glXDestroyWindow: *const @TypeOf(c.glXDestroyWindow),
+    glXDestroyWindow: GLXDestroyWindow,
 
     pub fn load() !void {
         glx.handle = std.DynLib.open("libGLX.so") catch return error.FailedToLoadGLX;
-        inline for (@typeInfo(GLXLib).Struct.fields[1..]) |field| {
+        inline for (@typeInfo(GLXLib).@"struct".fields[1..]) |field| {
             const name = std.fmt.comptimePrint("{s}\x00", .{field.name});
             const name_z: [:0]const u8 = @ptrCast(name[0 .. name.len - 1]);
             @field(glx, field.name) = glx.handle.lookup(field.type, name_z) orelse {
@@ -81,30 +86,28 @@ var gl: glLib = undefined;
 const glLib = struct {
     handle: std.DynLib,
 
-    glMatrixMode: *const @TypeOf(c.glMatrixMode),
-    glLoadIdentity: *const @TypeOf(c.glLoadIdentity),
+    glMatrixMode: *const fn (mode: c.GLenum) callconv(.c) void,
+    glLoadIdentity: *const fn () callconv(.c) void,
 
-    glTranslatef: *const @TypeOf(c.glTranslatef),
-    glScalef: *const @TypeOf(c.glScalef),
-    glViewport: *const @TypeOf(c.glViewport),
+    glTranslatef: *const fn (x: c.GLfloat, y: c.GLfloat, z: c.GLfloat) callconv(.c) void,
+    glScalef: *const fn (x: c.GLfloat, y: c.GLfloat, z: c.GLfloat) callconv(.c) void,
+    glViewport: *const fn (x: c.GLint, y: c.GLint, width: c.GLsizei, height: c.GLsizei) callconv(.c) void,
 
-    glClear: *const @TypeOf(c.glClear),
-    glBindTexture: *const @TypeOf(c.glBindTexture),
-    glEnable: *const @TypeOf(c.glEnable),
-    glBegin: *const @TypeOf(c.glBegin),
-    glTexCoord2f: *const @TypeOf(c.glTexCoord2f),
-    glVertex2i: *const @TypeOf(c.glVertex2i),
-    glEnd: *const @TypeOf(c.glEnd),
-    glDisable: *const @TypeOf(c.glDisable),
-    glFlush: *const @TypeOf(c.glFlush),
-
-    glTexParameteri: *const @TypeOf(c.glTexParameteri),
-
-    glGenTextures: *const @TypeOf(c.glGenTextures),
+    glClear: *const fn (mask: c.GLbitfield) callconv(.c) void,
+    glBindTexture: *const fn (target: c.GLenum, texture: c.GLuint) callconv(.c) void,
+    glEnable: *const fn (cap: c.GLenum) callconv(.c) void,
+    glBegin: *const fn (mode: c.GLenum) callconv(.c) void,
+    glTexCoord2f: *const fn (s: c.GLfloat, t: c.GLfloat) callconv(.c) void,
+    glVertex2i: *const fn (x: c.GLint, y: c.GLint) callconv(.c) void,
+    glEnd: *const fn () callconv(.c) void,
+    glDisable: *const fn (cap: c.GLenum) callconv(.c) void,
+    glFlush: *const fn () callconv(.c) void,
+    glTexParameteri: *const fn (target: c.GLenum, pname: c.GLenum, param: c.GLint) callconv(.c) void,
+    glGenTextures: *const fn (n: c.GLsizei, textures: [*c]c.GLuint) callconv(.c) void,
 
     pub fn load() !void {
-        gl.handle = std.DynLib.open("libGL.so") catch return error.FailedToLoadGLX;
-        inline for (@typeInfo(glLib).Struct.fields[1..]) |field| {
+        gl.handle = std.DynLib.open("libGL.so") catch return error.FailedToLoadLibGL;
+        inline for (@typeInfo(glLib).@"struct".fields[1..]) |field| {
             const name = std.fmt.comptimePrint("{s}\x00", .{field.name});
             const name_z: [:0]const u8 = @ptrCast(name[0 .. name.len - 1]);
             @field(gl, field.name) = gl.handle.lookup(field.type, name_z) orelse {
@@ -115,25 +118,22 @@ const glLib = struct {
     }
 };
 
-const backbuffer_capture = @import("backbuffer-capture");
+const allocator = std.heap.smp_allocator;
 
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-const allocator = gpa.allocator();
-
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     try GLXLib.load();
     try X11Lib.load();
     try glLib.load();
 
-    var iterator = std.process.ArgIterator.init();
+    var iterator = try init.minimal.args.iterateAllocator(allocator);
     _ = iterator.next();
 
-    var pid_as_str = iterator.next() orelse {
+    const pid_as_str = iterator.next() orelse {
         std.log.err("Specify the pid that has the backbuffer capture preloaded as the first arg", .{});
         return error.ArgParseFailed;
     };
 
-    var pid = std.fmt.parseInt(c_int, pid_as_str, 10) catch |e| {
+    const pid = std.fmt.parseInt(c_int, pid_as_str, 10) catch |e| {
         switch (e) {
             else => {
                 std.log.err("Failed to parse first arg into a pid", .{});
@@ -142,18 +142,21 @@ pub fn main() !void {
         }
     };
 
-    var options = backbuffer_capture.VKBackbufferInitializeOptions{
+    var options = backbuffer_capture.api.VKBackbufferInitializeOptions{
         .target_app_id = pid,
     };
-    var state: backbuffer_capture.VKBackbufferCaptureState = null;
+    var state: backbuffer_capture.api.VKBackbufferCaptureState = null;
     try backbuffer_capture.capture_init(&options, &state);
     defer backbuffer_capture.capture_deinit(state);
 
-    var init_backbuffer_frame: backbuffer_capture.VKBackbufferFrame = undefined;
+    var init_backbuffer_frame: backbuffer_capture.api.VKBackbufferFrame = undefined;
     try backbuffer_capture.capture_try_get_next_frame(state, std.time.ns_per_s * 2, &init_backbuffer_frame);
     try backbuffer_capture.capture_return_frame(state, &init_backbuffer_frame);
 
-    var display = x11.XOpenDisplay("");
+    const display = x11.XOpenDisplay("");
+    if (display == null) {
+        return error.FailedToOpenDisplay;
+    }
     _ = x11.XSynchronize(display, 1);
 
     var single_buffer_attributes = [_]c_int{
@@ -171,34 +174,34 @@ pub fn main() !void {
     };
 
     var num_fb_configs: c_int = 0;
-    var fb_configs = glx.glXChooseFBConfig(display, c.DefaultScreen(display), &single_buffer_attributes, &num_fb_configs);
+    const fb_configs = glx.glXChooseFBConfig(display, c.DefaultScreen(display), &single_buffer_attributes, &num_fb_configs);
 
     if (num_fb_configs == 0) {
         return error.NoFbConfigFound;
     }
 
-    var visual_info = glx.glXGetVisualFromFBConfig(display, fb_configs[0]);
+    const visual_info = glx.glXGetVisualFromFBConfig(display, fb_configs[0]);
     var window_attributes = std.mem.zeroInit(c.XSetWindowAttributes, .{
         .border_pixel = 0,
         .event_mask = c.StructureNotifyMask,
         .colormap = x11.XCreateColormap(display, c.RootWindow(display, visual_info.*.screen), visual_info.*.visual, c.AllocNone),
     });
 
-    var ratio = @as(f32, @floatFromInt(init_backbuffer_frame.width)) / @as(f32, @floatFromInt(init_backbuffer_frame.height));
+    const ratio = @as(f32, @floatFromInt(init_backbuffer_frame.width)) / @as(f32, @floatFromInt(init_backbuffer_frame.height));
 
-    var swa_mask: c_ulong = @intCast(c.CWBorderPixel | c.CWColormap | c.CWEventMask | c.CWOverrideRedirect);
-    var win = x11.XCreateWindow(display, c.RootWindow(display, visual_info.*.screen), 0, 0, @intFromFloat(500 * ratio), 500, 0, visual_info.*.depth, c.InputOutput, visual_info.*.visual, swa_mask, &window_attributes);
+    const swa_mask: c_ulong = @intCast(c.CWBorderPixel | c.CWColormap | c.CWEventMask | c.CWOverrideRedirect);
+    const win = x11.XCreateWindow(display, c.RootWindow(display, visual_info.*.screen), 0, 0, @intFromFloat(500 * ratio), 500, 0, visual_info.*.depth, c.InputOutput, visual_info.*.visual, swa_mask, &window_attributes);
 
     std.log.info("{}x{}", .{ init_backbuffer_frame.width, init_backbuffer_frame.height });
 
     _ = x11.XStoreName(display, win, "Example Window");
 
-    var context = glx.glXCreateNewContext(display, fb_configs[0], c.GLX_RGBA_TYPE, null, 1);
+    const context = glx.glXCreateNewContext(display, fb_configs[0], c.GLX_RGBA_TYPE, null, 1);
     if (context == null) {
         return error.FailedToCreateContext;
     }
 
-    var glx_win = glx.glXCreateWindow(display, fb_configs[0], win, null);
+    const glx_win = glx.glXCreateWindow(display, fb_configs[0], win, null);
     if (glx_win == 0) {
         return error.FailedToCreateGlxWin;
     }
@@ -208,7 +211,7 @@ pub fn main() !void {
 
     _ = glx.glXMakeContextCurrent(display, glx_win, glx_win, context);
 
-    var handle_to_gl_tex = std.AutoArrayHashMap(c_int, u32).init(allocator);
+    var handle_to_gl_tex: std.array_hash_map.Auto(c_int, u32) = .empty;
 
     gl.glMatrixMode(c.GL_PROJECTION);
     gl.glLoadIdentity();
@@ -230,7 +233,7 @@ pub fn main() !void {
             gl.glViewport(0, 0, event.xconfigure.width, event.xconfigure.height);
         }
 
-        var backbuffer_frame: backbuffer_capture.VKBackbufferFrame = undefined;
+        var backbuffer_frame: backbuffer_capture.api.VKBackbufferFrame = undefined;
         backbuffer_capture.capture_try_get_next_frame(state, std.time.ns_per_ms * 30, &backbuffer_frame) catch |e| {
             switch (e) {
                 error.Timeout => {
@@ -243,7 +246,7 @@ pub fn main() !void {
             }
         };
 
-        var gl_handle = blk: {
+        const gl_handle = blk: {
             if (handle_to_gl_tex.get(backbuffer_frame.frame_fd_opaque)) |gl_tex| {
                 break :blk gl_tex;
             } else {
@@ -261,7 +264,7 @@ pub fn main() !void {
                 }
 
                 try backbuffer_capture.capture_import_opengl_texture(state, &backbuffer_frame, texture);
-                try handle_to_gl_tex.put(backbuffer_frame.frame_fd_opaque, texture);
+                try handle_to_gl_tex.put(allocator, backbuffer_frame.frame_fd_opaque, texture);
 
                 break :blk texture;
             }
