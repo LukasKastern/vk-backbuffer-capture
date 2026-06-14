@@ -3,7 +3,7 @@ const std = @import("std");
 // Although this function looks imperative, note that its job is to
 // declaratively construct a build graph that will be executed by an external
 // runner.
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
     // Standard target options allows the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
     // means any target is allowed, and the default is native. Other options
@@ -15,17 +15,25 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
+    const cwd = b.build_root.path.?;
+
+    const src_vert = try std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ cwd, "src/shaders/vs_swapchain_fullscreen.vert" });
+    const dst_vert = try std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ cwd, "src/shaders/vs_swapchain_fullscreen.spv" });
+
     _ = b.run(&.{
         "glslc",
-        "src/shaders/vs_swapchain_fullscreen.vert",
+        src_vert,
         "-o",
-        "src/shaders/vs_swapchain_fullscreen.spv",
+        dst_vert,
     });
+
+    const src_frag = try std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ cwd, "src/shaders/fs_swapchain_fullscreen.frag" });
+    const dst_frag = try std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ cwd, "src/shaders/fs_swapchain_fullscreen.spv" });
     _ = b.run(&.{
         "glslc",
-        "src/shaders/fs_swapchain_fullscreen.frag",
+        src_frag,
         "-o",
-        "src/shaders/fs_swapchain_fullscreen.spv",
+        dst_frag,
     });
 
     const hook = b.addLibrary(.{
@@ -39,14 +47,16 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    const sdk_module = b.addModule("backbuffer-api-mod", .{
+        .target = target,
+        .optimize = optimize,
+        .root_source_file = b.path("src/sdk/api.zig"),
+        .link_libc = true,
+    });
+
     const sdk = b.addLibrary(.{
         .name = "backbuffer-api",
-        .root_module = b.createModule(.{
-            .target = target,
-            .optimize = optimize,
-            .root_source_file = b.path("src/sdk/api.zig"),
-            .link_libc = true,
-        }),
+        .root_module = sdk_module,
     });
 
     sdk.bundle_compiler_rt = true;
