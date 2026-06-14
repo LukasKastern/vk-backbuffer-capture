@@ -56,6 +56,7 @@ pub fn build(b: *std.Build) void {
     });
 
     sdk.root_module.addImport("shared", shared_module);
+    hook.root_module.addImport("shared", shared_module);
 
     sdk.root_module.addIncludePath(b.path("src/sdk/"));
     sdk.installHeadersDirectory(b.path("src/sdk/backbuffer-capture/"), "backbuffer-capture/", .{});
@@ -90,6 +91,13 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .root_source_file = b.path("src/examples/window/c.h"),
     });
+
+    const shared_c = b.addTranslateC(.{
+        .optimize = optimize,
+        .target = target,
+        .root_source_file = b.path("src/shared.c"),
+    });
+    shared_module.addImport("shared_c", shared_c.createModule());
 
     // Import opengl-headers
     const dep_opengl_header = b.dependency("gl", .{});

@@ -43,7 +43,8 @@ pub fn capture_init(options: *const api.VKBackbufferInitializeOptions, out_state
     const shm_section_name = try shared.formatSectionName(options.target_app_id);
 
     std.log.info("Open shm section: {s}", .{shm_section_name});
-    const shm_handle = c.shm_open(shm_section_name, c.O_RDWR, 0);
+
+    const shm_handle = c.shm_open(shm_section_name, @intFromEnum(std.posix.ACCMODE.RDWR), 0);
 
     if (shm_handle == -1) {
         return VkBackbufferErrors.RemoteNotFound;

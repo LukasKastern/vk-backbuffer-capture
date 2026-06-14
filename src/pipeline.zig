@@ -1,5 +1,5 @@
 const std = @import("std");
-const vulkan = @import("vk.zig");
+const vulkan = @import("shared").vulkan;
 
 const frag_shader = @embedFile("shaders/fs_swapchain_fullscreen.spv");
 const vert_shader = @embedFile("shaders/vs_swapchain_fullscreen.spv");

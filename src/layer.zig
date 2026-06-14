@@ -1,10 +1,10 @@
 const std = @import("std");
 
-const c = @import("shared.zig").c;
-const formatSectionName = @import("shared.zig").formatSectionName;
-const HookSharedData = @import("shared.zig").HookSharedData;
+const c = @import("shared").c;
+const formatSectionName = @import("shared").formatSectionName;
+const HookSharedData = @import("shared").HookSharedData;
 const pipeline = @import("pipeline.zig");
-const vulkan = @import("vk.zig");
+const vulkan = @import("shared").vulkan;
 const InstanceApi = vulkan.InstanceApi;
 const DeviceApi = vulkan.DeviceApi;
 
@@ -762,7 +762,13 @@ fn isOrTrySetSwapchainActive(device_data: *VkDeviceData, swapchains: []const vul
 
         _ = c.shm_unlink(shm_section_name);
 
-        const shm_handle = c.shm_open(shm_section_name, c.O_CREAT | c.O_EXCL | c.O_RDWR, c.S_IRUSR | c.S_IWUSR | c.S_IXUSR);
+        const mode = std.posix.O{
+            .CREAT = true,
+            .EXCL = true,
+            .ACCMODE = .RDWR,
+        };
+        const perm = std.posix.S.IRUSR | std.posix.S.IWUSR | std.posix.S.IXUSR;
+        const shm_handle = c.shm_open(shm_section_name, @bitCast(mode), perm);
         if (shm_handle == -1) {
             return error.FailedToOpenBackbufferHook;
         }

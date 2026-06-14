@@ -1,20 +1,7 @@
 const std = @import("std");
-const vulkan = @import("vk.zig");
 
-pub const c = @cImport({
-    @cInclude("semaphore.h");
-    @cInclude("sys/stat.h");
-    @cInclude("sys/mman.h");
-    @cInclude("unistd.h");
-    @cInclude("pthread.h");
-    @cInclude("fcntl.h");
-    @cInclude("dlfcn.h");
-    @cInclude("sys/ptrace.h");
-    @cInclude("sys/syscall.h");
-    @cInclude("sys/stat.h");
-    @cInclude("errno.h");
-    @cInclude("sys/wait.h");
-});
+pub const vulkan = @import("vk.zig");
+pub const c = @import("shared_c");
 
 var shm_section_name_buffer: [128]u8 = undefined;
 
