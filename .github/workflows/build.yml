@@ -1,0 +1,36 @@
+name: Build and Test
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        target: [
+          x86_64-linux-gnu,
+          x86_64-linux-musl,
+        ]
+        optimize: [
+          Debug,
+          ReleaseSafe,
+          ReleaseFast,
+          ReleaseSmall
+        ]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          submodules: recursive
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build
+        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=${{ matrix.optimize }}
