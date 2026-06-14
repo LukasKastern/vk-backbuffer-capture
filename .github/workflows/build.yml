@@ -28,7 +28,7 @@ jobs:
           submodules: recursive
 
       - name: Install glslc
-        run: sudo apt-get install -y shaderc
+        run: sudo apt-get install -y glslc
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
