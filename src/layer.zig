@@ -186,6 +186,13 @@ fn initCopyData(
     try vulkan.vkCall(device_data.api.vkAllocateCommandBuffers.?, .{ device_data.vk_device, &allocate_info, vk_command_buffers.ptr });
     errdefer device_data.api.vkFreeCommandBuffers.?(device_data.vk_device, command_pool, @intCast(vk_command_buffers.len), vk_command_buffers.ptr);
 
+    // We manually store the command buffers dispatch table
+    // TODO (lukas): I believe we shall call into the loaders allocate command buffer function instead.
+    //               Which would set this mapping up for us already.
+    for (vk_command_buffers) |buffer| {
+        @as(**anyopaque, @ptrCast(@alignCast(buffer.?))).* = @as(**anyopaque, @ptrCast(@alignCast(device_data.vk_device))).*;
+    }
+
     // Create sampler
     const sampler_info = std.mem.zeroInit(vulkan.C.VkSamplerCreateInfo, .{
         .sType = vulkan.C.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
@@ -244,12 +251,27 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.C.VkQueue, pres
         return error.SwapchainNotFound;
     };
 
+    // Reset mapped swapchain image indices on resubmission
+    for (capture_instance.hook_images) |*hook_image| {
+        if (hook_image.swapchain_image_idx) |image_idx| {
+            if (image_idx == buffer_idx) {
+                hook_image.swapchain_image_idx = null;
+            }
+        }
+    }
+
     const image_and_lock = blk: {
         _ = c.pthread_mutex_lock(&capture_instance.shm_buf.lock);
         defer _ = c.pthread_mutex_unlock(&capture_instance.shm_buf.lock);
 
         for (capture_instance.hook_images, capture_instance.shm_buf.texture_locks[0..capture_instance.hook_images.len], 0..) |*hook_image, *lock, idx| {
+            // Skip the image that is currently visible to the user
             if (idx == capture_instance.shm_buf.latest_texture) {
+                continue;
+            }
+
+            // Hook image has not been reacquired..
+            if (hook_image.swapchain_image_idx != null) {
                 continue;
             }
 
@@ -482,6 +504,10 @@ fn copyIntoHookTexture(device_data: *VkDeviceData, queue: vulkan.C.VkQueue, pres
         hook_image.vk_fence,
     });
 
+    // Assign swapchain image index
+    // This avoids reusing the hook image until it is resubmitted
+    hook_image.swapchain_image_idx = buffer_idx;
+
     {
         capture_instance.notify.lock.lockUncancelable(io);
         defer capture_instance.notify.lock.unlock(io);
@@ -626,7 +652,15 @@ fn allocateHookImages(device_data: *VkDeviceData, swapchain_data: SwapchainData)
         var sem_create_info = std.mem.zeroInit(vulkan.C.VkSemaphoreCreateInfo, .{
             .sType = vulkan.C.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
         });
-        try vulkan.vkCall(device_data.api.vkCreateSemaphore.?, .{ device_data.vk_device, &sem_create_info, null, &hook_image.vk_sem });
+
+        try vulkan.vkCall(device_data.api.vkCreateSemaphore.?, .{
+            device_data.vk_device,
+            &sem_create_info,
+            null,
+            &hook_image.vk_sem,
+        });
+
+        hook_image.swapchain_image_idx = null;
     }
 
     return hook_images;
@@ -860,6 +894,10 @@ const HookImageData = struct {
     image_handle: c_int,
     size: u64,
     vk_sem: vulkan.C.VkSemaphore,
+
+    // Does the hook image currently have a swapchain image assigned?
+    // A hook image can only be reused once this is set to null
+    swapchain_image_idx: ?usize = null,
 };
 
 const QueueData = struct {
@@ -1540,8 +1578,9 @@ pub const std_options = std.Options{
 var log_level: std.log.Level = .warn;
 
 fn configureLogLevel() !void {
-    log_level = .debug;
     // How should we do this lol
+    // There is no global environment anymore in zig >= 0.16.0
+    // For now manually change this when debugging is needed :/
     //
     // if (env_map.get("BACKBUFFER_CAPTURE_DEBUG")) |level_str| {
     //     log_level = blk: {
